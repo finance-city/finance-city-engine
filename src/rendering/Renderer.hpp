@@ -1,0 +1,290 @@
+#pragma once
+
+#include "src/resources/ResourceManager.hpp"
+#include "src/scene/SceneManager.hpp"
+#include "src/utils/Vertex.hpp"
+#include "src/rendering/RendererBridge.hpp"
+#include "src/rendering/InstancedRenderData.hpp"
+#include "src/effects/ParticleRenderer.hpp"
+#include "src/rendering/SkyboxRenderer.hpp"
+#include "src/rendering/ShadowRenderer.hpp"
+#include "src/rendering/IBLManager.hpp"
+
+#include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <array>
+#include <memory>
+#include <vector>
+#include <string>
+#include <chrono>
+#include <optional>
+
+/**
+ * @brief High-level renderer coordinating subsystems
+ *
+ * Responsibilities:
+ * - Coordinate rendering components (swapchain, pipeline, command, sync)
+ * - Manage ResourceManager, SceneManager, IBL, shadow, skybox, particles
+ * - Uniform buffer management
+ * - Frame rendering orchestration
+ */
+class Renderer {
+public:
+    /**
+     * @brief Construct renderer with window
+     * @param window GLFW window for surface creation
+     * @param validationLayers Validation layers to enable
+     * @param enableValidation Whether to enable validation
+     */
+    Renderer(GLFWwindow* window,
+             const std::vector<const char*>& validationLayers,
+             bool enableValidation);
+
+    ~Renderer();
+
+    // Disable copy and move
+    Renderer(const Renderer&) = delete;
+    Renderer& operator=(const Renderer&) = delete;
+    Renderer(Renderer&&) = delete;
+    Renderer& operator=(Renderer&&) = delete;
+
+    /**
+     * @brief Load model from file
+     * @param modelPath Path to model file
+     */
+    void loadModel(const std::string& modelPath);
+
+    /**
+     * @brief Load texture from file
+     * @param texturePath Path to texture file
+     */
+    void loadTexture(const std::string& texturePath);
+
+    /**
+     * @brief Draw a single frame using RHI rendering (Phase 7: Full RHI migration)
+     */
+    void drawFrame();
+
+    /**
+     * @brief Wait for device to be idle (for cleanup)
+     */
+    void waitIdle();
+
+    /**
+     * @brief Handle framebuffer resize
+     */
+    void handleFramebufferResize();
+
+    /**
+     * @brief Update camera matrices and position
+     * @param view View matrix
+     * @param projection Projection matrix
+     * @param position Camera world position (for specular lighting)
+     */
+    void updateCamera(const glm::mat4& view, const glm::mat4& projection, const glm::vec3& position);
+
+
+    /**
+     * @brief Get mesh bounding box center (for camera targeting)
+     * @return Center of primary mesh's bounding box
+     */
+    glm::vec3 getMeshCenter() const;
+
+    /**
+     * @brief Get mesh bounding box radius (for camera far plane calculation)
+     * @return Radius of primary mesh's bounding sphere
+     */
+    float getMeshRadius() const;
+
+    /**
+     * @brief Get RHI device (for external components like ImGui)
+     */
+    rhi::RHIDevice* getRHIDevice() { return rhiBridge ? rhiBridge->getDevice() : nullptr; }
+
+    /**
+     * @brief Get RHI swapchain (for external components like ImGui)
+     */
+    rhi::RHISwapchain* getRHISwapchain() { return rhiBridge ? rhiBridge->getSwapchain() : nullptr; }
+
+    /**
+     * @brief Get RHI graphics queue (for external components like game logic)
+     */
+    rhi::RHIQueue* getGraphicsQueue() { return rhiBridge ? rhiBridge->getGraphicsQueue() : nullptr; }
+
+#ifndef __EMSCRIPTEN__
+    /**
+     * @brief Get ImGui manager (for external UI updates)
+     */
+    class ImGuiManager* getImGuiManager() { return imguiManager.get(); }
+#endif
+
+    /**
+     * @brief Initialize ImGui subsystem (no-op on WASM)
+     */
+    void initImGui(GLFWwindow* window);
+
+    /**
+     * @brief Submit instanced rendering data for this frame
+     * @param data Rendering data (mesh, instance buffer, count)
+     *
+     * This is a clean interface - Renderer doesn't know about game entities.
+     * Application layer extracts rendering data from game logic and passes it here.
+     */
+    void submitInstancedRenderData(const rendering::InstancedRenderData& data);
+
+    /**
+     * @brief Submit particle system for rendering this frame
+     * @param particleSystem Particle system to render
+     */
+    void submitParticleSystem(effects::ParticleSystem* particleSystem);
+
+    // Phase 3.3: Lighting configuration
+    void setSunDirection(const glm::vec3& dir) { sunDirection = glm::normalize(dir); }
+    glm::vec3 getSunDirection() const { return sunDirection; }
+    void setSunIntensity(float intensity) { sunIntensity = intensity; }
+    float getSunIntensity() const { return sunIntensity; }
+    void setSunColor(const glm::vec3& color) { sunColor = color; }
+    glm::vec3 getSunColor() const { return sunColor; }
+    void setAmbientIntensity(float intensity) { ambientIntensity = intensity; }
+    float getAmbientIntensity() const { return ambientIntensity; }
+
+    // Shadow configuration
+    void setShadowBias(float bias) { shadowBias = bias; }
+    float getShadowBias() const { return shadowBias; }
+    void setShadowStrength(float strength) { shadowStrength = strength; }
+    float getShadowStrength() const { return shadowStrength; }
+
+    // PBR tone mapping
+    void setExposure(float exp) { exposure = exp; }
+    float getExposure() const { return exposure; }
+
+    /**
+     * @brief Load HDR environment map and initialize full IBL pipeline
+     * @param hdrPath Path to .hdr equirectangular environment map
+     * @return true if IBL was successfully initialized
+     */
+    bool loadEnvironmentMap(const std::string& hdrPath);
+
+private:
+    // Window reference
+    GLFWwindow* window;
+
+    // RHI Bridge (provides RHI device access and lifecycle management)
+    std::unique_ptr<rendering::RendererBridge> rhiBridge;
+
+    // High-level managers
+    std::unique_ptr<ResourceManager> resourceManager;
+    std::unique_ptr<SceneManager> sceneManager;
+#ifndef __EMSCRIPTEN__
+    std::unique_ptr<class ImGuiManager> imguiManager;  // Phase 6: ImGui integration
+#endif
+
+    // RHI core resources
+    std::unique_ptr<rhi::RHITexture> rhiDepthImage;
+    std::unique_ptr<rhi::RHITextureView> rhiDepthImageView;
+    std::vector<std::unique_ptr<rhi::RHIBuffer>> rhiUniformBuffers;
+    std::unique_ptr<rhi::RHIBindGroupLayout> rhiBindGroupLayout;
+    std::vector<std::unique_ptr<rhi::RHIBindGroup>> rhiBindGroups;
+
+    // Legacy RHI pipeline (OBJ model rendering, unused in finance-city flow)
+    std::unique_ptr<rhi::RHIShader> rhiVertexShader;
+    std::unique_ptr<rhi::RHIShader> rhiFragmentShader;
+    std::unique_ptr<rhi::RHIPipelineLayout> rhiPipelineLayout;
+    std::unique_ptr<rhi::RHIRenderPipeline> rhiPipeline;
+
+    // Building Instancing Pipeline
+    std::unique_ptr<rhi::RHIShader> buildingVertexShader;
+    std::unique_ptr<rhi::RHIShader> buildingFragmentShader;
+    std::unique_ptr<rhi::RHIBindGroupLayout> buildingBindGroupLayout;
+    std::vector<std::unique_ptr<rhi::RHIBindGroup>> buildingBindGroups;
+    std::unique_ptr<rhi::RHIPipelineLayout> buildingPipelineLayout;
+    std::unique_ptr<rhi::RHIRenderPipeline> buildingPipeline;
+
+    // Frame synchronization
+    uint32_t currentFrame = 0;
+    static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+
+    // SSBO bind group (set 1) for per-object data
+    std::unique_ptr<rhi::RHIBindGroupLayout> ssboBindGroupLayout;
+    std::array<std::unique_ptr<rhi::RHIBindGroup>, MAX_FRAMES_IN_FLIGHT> ssboBindGroups;
+    std::array<rhi::RHIBuffer*, MAX_FRAMES_IN_FLIGHT> cachedObjectBuffers = {};
+
+    // GPU Frustum Culling resources
+    std::unique_ptr<rhi::RHIShader> cullComputeShader;
+    std::unique_ptr<rhi::RHIBindGroupLayout> cullBindGroupLayout;
+    std::unique_ptr<rhi::RHIPipelineLayout> cullPipelineLayout;
+    std::unique_ptr<rhi::RHIComputePipeline> cullPipeline;
+    std::array<std::unique_ptr<rhi::RHIBuffer>, MAX_FRAMES_IN_FLIGHT> cullUniformBuffers;
+    std::array<std::unique_ptr<rhi::RHIBuffer>, MAX_FRAMES_IN_FLIGHT> indirectDrawBuffers;
+    std::array<std::unique_ptr<rhi::RHIBuffer>, MAX_FRAMES_IN_FLIGHT> visibleIndicesBuffers;
+    std::array<std::unique_ptr<rhi::RHIBindGroup>, MAX_FRAMES_IN_FLIGHT> cullBindGroups;
+    static constexpr uint32_t MAX_CULL_OBJECTS = 4096;
+
+    // Async compute
+    std::unique_ptr<rhi::RHITimelineSemaphore> computeTimelineSemaphore;
+    uint64_t computeTimelineValue = 0;
+    bool useAsyncCompute = false;
+
+    struct alignas(16) CullUBO {
+        glm::vec4 frustumPlanes[6];
+        uint32_t objectCount;
+        uint32_t indexCount;
+        uint32_t pad[2];
+    };
+
+    // Legacy RHI Vertex/Index Buffers (unused in finance-city flow)
+    std::unique_ptr<rhi::RHIBuffer> rhiVertexBuffer;
+    std::unique_ptr<rhi::RHIBuffer> rhiIndexBuffer;
+    uint32_t rhiIndexCount = 0;
+
+    // For uniform buffer animation
+    std::chrono::time_point<std::chrono::high_resolution_clock> startTime;
+
+    // Camera matrices
+    glm::mat4 viewMatrix;
+    glm::mat4 projectionMatrix;
+    glm::vec3 cameraPosition = glm::vec3(0.0f);
+
+    // Lighting parameters
+    glm::vec3 sunDirection = glm::normalize(glm::vec3(1.0f, 0.6f, 1.0f));
+    float sunIntensity = 1.5f;
+    glm::vec3 sunColor = glm::vec3(1.0f, 0.95f, 0.9f);  // Slightly warm white sunlight
+    float ambientIntensity = 0.25f;
+
+    // Instanced rendering data (submitted per-frame) - stored by value
+    std::optional<rendering::InstancedRenderData> pendingInstancedData;
+
+    // Particle rendering
+    std::unique_ptr<effects::ParticleRenderer> particleRenderer;
+    effects::ParticleSystem* pendingParticleSystem = nullptr;
+
+    // Subsystem renderers
+    std::unique_ptr<rendering::SkyboxRenderer> skyboxRenderer;
+    std::unique_ptr<rendering::ShadowRenderer> shadowRenderer;
+    std::unique_ptr<rendering::IBLManager> iblManager;
+    float shadowBias = 0.008f;
+    float shadowStrength = 0.7f;
+    float exposure = 1.0f;
+
+    // RHI initialization methods
+    void createRHIDepthResources();
+    void createRHIUniformBuffers();
+    void createRHIBindGroups();
+    void createRHIPipeline();
+    void createRHIBuffers();
+    void createBuildingPipeline();
+    void createParticleRenderer();
+    void createSkyboxRenderer();
+    void createShadowRenderer();
+    void createIBL();
+    void createCullingPipeline();
+    void performFrustumCulling(rhi::RHICommandEncoder* encoder, uint32_t frameIndex,
+                               uint32_t objectCount, uint32_t indexCount);
+    void performFrustumCullingAsync(uint32_t frameIndex, uint32_t objectCount, uint32_t indexCount);
+    void extractFrustumPlanes(const glm::mat4& vp, glm::vec4 planes[6]);
+
+    void updateRHIUniformBuffer(uint32_t currentImage);
+
+    // Swapchain recreation
+    void recreateSwapchain();
+};
