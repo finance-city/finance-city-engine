@@ -19,7 +19,7 @@ struct QueueWorkDoneData {
 };
 
 #ifdef __EMSCRIPTEN__
-static void onQueueWorkDone(WGPUQueueWorkDoneStatus status, WGPUStringView /*message*/,
+static void onQueueWorkDone(WGPUQueueWorkDoneStatus status,
                             void* userdata1, void* /*userdata2*/) {
     auto* data = static_cast<QueueWorkDoneData*>(userdata1);
     data->status = status;

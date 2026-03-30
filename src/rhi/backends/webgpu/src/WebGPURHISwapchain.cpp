@@ -136,7 +136,10 @@ RHITextureView* WebGPURHISwapchain::acquireNextImage(RHISemaphore* signalSemapho
     if (!surfaceTexture.texture ||
         (surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&
          surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal)) {
-        throw std::runtime_error("Failed to acquire swapchain texture");
+        // Return nullptr instead of throwing — the surface may be temporarily outdated
+        // after a resize. RendererBridge::beginFrame() handles nullptr gracefully by
+        // triggering a swapchain recreation on the next frame.
+        return nullptr;
     }
 
     WGPUTextureView textureView = wgpuTextureCreateView(surfaceTexture.texture, nullptr);

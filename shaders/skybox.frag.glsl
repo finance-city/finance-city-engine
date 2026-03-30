@@ -10,52 +10,35 @@ layout(binding = 0) uniform UniformBufferObject {
 
 layout(location = 0) out vec4 outColor;
 
-// Procedural sky gradient
-vec3 getSkyColor(vec3 rayDir, vec3 sunDir) {
+// Procedural sky: gradient + sun disk, sunset-toned
+vec3 proceduralSky(vec3 rayDir, vec3 sunDir) {
     vec3 dir = normalize(rayDir);
+    float elev = dir.y;
 
-    // Sky colors
-    vec3 skyColorZenith = vec3(0.15, 0.35, 0.65);   // Deep blue at top
-    vec3 skyColorHorizon = vec3(0.6, 0.75, 0.9);    // Light blue at horizon
-    vec3 groundColor = vec3(0.2, 0.2, 0.22);        // Dark gray below horizon
+    // Sky gradient: deep blue at zenith → warm orange at horizon → dark ground
+    vec3 zenith  = vec3(0.05, 0.15, 0.40);
+    vec3 horizon = vec3(0.60, 0.40, 0.25);
+    vec3 ground  = vec3(0.10, 0.08, 0.05);
 
-    // Gradient based on Y component
-    float t = dir.y * 0.5 + 0.5;  // Map [-1,1] to [0,1]
+    vec3 sky;
+    if (elev > 0.0)
+        sky = mix(horizon, zenith, sqrt(elev));
+    else
+        sky = mix(horizon, ground, clamp(-elev * 4.0, 0.0, 1.0));
 
-    // Below horizon
-    if (dir.y < 0.0) {
-        float groundBlend = smoothstep(-0.1, 0.0, dir.y);
-        return mix(groundColor, skyColorHorizon, groundBlend);
-    }
+    // Sun disk + glow
+    float s = max(0.0, dot(dir, normalize(sunDir)));
+    sky += vec3(1.0, 0.95, 0.8) * (pow(s, 512.0) + pow(s, 8.0) * 0.5);
 
-    // Above horizon - gradient from horizon to zenith
-    vec3 skyColor = mix(skyColorHorizon, skyColorZenith, pow(t, 0.5));
+    // Horizon haze (warm tones to match sunset palette)
+    float hazeAmount = 1.0 - pow(abs(elev), 0.3);
+    vec3 hazeColor = vec3(0.65, 0.50, 0.35);
+    sky = mix(sky, hazeColor, hazeAmount * 0.3);
 
-    // Sun
-    float sunDot = dot(dir, normalize(sunDir));
-
-    // Sun disk
-    float sunIntensity = pow(max(sunDot, 0.0), 256.0) * 2.0;  // Sharp sun disk
-    vec3 sunColor = vec3(1.0, 0.95, 0.8);
-
-    // Sun glow (halo)
-    float glowIntensity = pow(max(sunDot, 0.0), 8.0) * 0.3;
-    vec3 glowColor = vec3(1.0, 0.8, 0.5);
-
-    // Combine
-    vec3 finalColor = skyColor;
-    finalColor += sunColor * sunIntensity;
-    finalColor += glowColor * glowIntensity;
-
-    // Horizon haze
-    float hazeAmount = 1.0 - pow(abs(dir.y), 0.3);
-    vec3 hazeColor = vec3(0.7, 0.75, 0.85);
-    finalColor = mix(finalColor, hazeColor, hazeAmount * 0.3);
-
-    return finalColor;
+    return sky;
 }
 
 void main() {
-    vec3 skyColor = getSkyColor(fragRayDir, ubo.sunDirection);
-    outColor = vec4(skyColor, 1.0);
+    vec3 color = proceduralSky(fragRayDir, ubo.sunDirection);
+    outColor = vec4(color, 1.0);
 }

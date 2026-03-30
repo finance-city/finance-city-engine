@@ -11,6 +11,8 @@
     {
       "name": "imgui",
       "features": ["glfw-binding", "vulkan-binding"]
-    }
+    },
+    "ixwebsocket",
+    "nlohmann-json"
   ]
 }

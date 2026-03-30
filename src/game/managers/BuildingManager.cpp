@@ -48,8 +48,12 @@ uint64_t BuildingManager::createBuilding(
     building.targetHeight = building.currentHeight;
     building.heightScale = 1.0f;
 
-    // Set default scale (5m x 5m base for better spacing)
-    building.baseScale = glm::vec3(5.0f, 1.0f, 5.0f);
+    // Deterministic varied footprint based on entity ID (20-40m, non-square for realism)
+    auto h1 = (entityId * 1664525u + 1013904223u) & 0xFF;
+    auto h2 = ((entityId + 7) * 1664525u + 1013904223u) & 0xFF;
+    float fx = 20.0f + (float)h1 / 255.0f * 20.0f;
+    float fz = 20.0f + (float)h2 / 255.0f * 20.0f;
+    building.baseScale = glm::vec3(fx, 1.0f, fz);
 
     // Initialize animation state
     building.isAnimating = false;
@@ -159,7 +163,7 @@ bool BuildingManager::updatePrice(const std::string& ticker, float newPrice) {
 
         // Adjust animation duration based on height change
         float heightDelta = std::abs(newHeight - building.currentHeight);
-        building.animationDuration = std::min(2.0f, 0.5f + heightDelta / 100.0f);
+        building.animationDuration = std::min(6.0f, 2.0f + heightDelta / 40.0f);
 
         // Add to animating list if not already present
         if (std::find(animatingEntities.begin(), animatingEntities.end(), building.entityId) == animatingEntities.end()) {
@@ -184,7 +188,15 @@ bool BuildingManager::updatePrice(const std::string& ticker, float newPrice) {
 void BuildingManager::batchUpdatePrices(const PriceUpdateBatch& updates) {
     for (const auto& update : updates) {
         updatePrice(update.ticker, update.price);
+        // Use the backend-provided rate directly (서버 계산값 우선)
+        if (update.rate != 0.0f) {
+            auto it = tickerToEntityId.find(update.ticker);
+            if (it != tickerToEntityId.end()) {
+                entities[it->second].priceChangePercent = update.rate;
+            }
+        }
     }
+    objectBufferDirty = true;
 }
 
 BuildingEntity* BuildingManager::getBuilding(uint64_t entityId) {
@@ -407,7 +419,7 @@ void BuildingManager::updateObjectBuffer() {
     {
         ObjectData ground{};
         glm::vec3 pos(0.0f, -0.05f, 0.0f);
-        glm::vec3 scale(300.0f, 0.1f, 300.0f);
+        glm::vec3 scale(100000.0f, 0.1f, 100000.0f);
         ground.worldMatrix = glm::translate(glm::mat4(1.0f), pos)
                            * glm::scale(glm::mat4(1.0f), scale);
         // AABB
@@ -415,9 +427,9 @@ void BuildingManager::updateObjectBuffer() {
         ground.boundingBoxMax = glm::vec4(pos + scale * 0.5f, 0.0f);
         ground.boundingBoxMin.y = pos.y;
         ground.boundingBoxMax.y = pos.y + scale.y;
-        // Material
-        ground.colorAndMetallic = glm::vec4(0.55f, 0.58f, 0.52f, 0.0f);  // sRGB gray-green, non-metallic
-        ground.roughnessAOPad = glm::vec4(0.9f, 1.0f, 0.0f, 0.0f);
+        // Material: medium asphalt
+        ground.colorAndMetallic = glm::vec4(0.35f, 0.35f, 0.38f, 0.0f);
+        ground.roughnessAOPad = glm::vec4(0.92f, 1.0f, 0.0f, 0.0f);
         objectData.push_back(ground);
     }
 

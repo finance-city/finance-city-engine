@@ -88,9 +88,14 @@ void RendererBridge::createCommandBuffers() {
 // ============================================================================
 
 void RendererBridge::createSwapchain(uint32_t width, uint32_t height, bool vsync) {
-    // Wait for device to be idle before recreating swapchain
+    // Destroy the existing swapchain BEFORE creating the new one.
+    // This is critical on WebGPU/Emscripten: the canvas can only have one
+    // configured surface at a time. If the old swapchain is destroyed after
+    // the new one is created (default RAII order), both surfaces coexist briefly
+    // which causes the new surface to be immediately invalidated.
     if (m_swapchain) {
         waitIdle();
+        m_swapchain.reset();
     }
 
     rhi::SwapchainDesc desc;

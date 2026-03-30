@@ -44,6 +44,12 @@ public:
      */
     void translate(float deltaX, float deltaY);
 
+    // Ground-plane pan (W/S/A/D): moves along XZ, ignores camera tilt
+    void pan(float deltaX, float deltaZ);
+
+    // Vertical elevation (Q/E): moves camera up/down in world Y
+    void elevate(float delta);
+
     /**
      * @brief Zoom camera (move along view direction)
      * @param delta Zoom amount (positive = zoom in, negative = zoom out)
@@ -66,6 +72,7 @@ public:
      * @return Camera position in world space
      */
     glm::vec3 getPosition() const { return position; }
+    float getDistance() const { return distance; }
 
 private:
     // Camera parameters

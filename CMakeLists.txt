@@ -42,6 +42,8 @@ if(NOT EMSCRIPTEN)
     find_package(Stb REQUIRED)
     find_package(tinyobjloader REQUIRED)
     find_package(imgui CONFIG REQUIRED)
+    find_package(ixwebsocket CONFIG REQUIRED)
+    find_package(nlohmann_json CONFIG REQUIRED)
 else()
     include(FetchContent)
     FetchContent_Declare(
@@ -74,6 +76,17 @@ else()
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(tinyobjloader)
+
+    # nlohmann/json for WebSocket message parsing (WASM)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+        GIT_SHALLOW TRUE
+    )
+    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+    set(JSON_Install   OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
 # =============================================================================
@@ -177,6 +190,8 @@ if(NOT EMSCRIPTEN)
         src/game/world/Sector.hpp
         src/game/sync/PriceUpdate.hpp
         src/game/sync/MockDataGenerator.hpp
+        src/game/sync/WebSocketDataFeed.hpp
+        src/game/sync/WebSocketDataFeed.cpp
         src/game/utils/AnimationUtils.hpp
         src/game/utils/HeightCalculator.hpp
         # Effects Layer
@@ -211,6 +226,8 @@ if(NOT EMSCRIPTEN)
         imgui::imgui
         rhi::factory
         rhi::vulkan
+        ixwebsocket::ixwebsocket
+        nlohmann_json::nlohmann_json
     )
 
     target_compile_definitions(FinanceCityEngine PRIVATE
@@ -297,7 +314,7 @@ if(NOT EMSCRIPTEN)
         COMMENT "Compiling prefilter_env.comp.glsl -> SPIR-V"
     )
 
-    # Phase 2.2: Frustum culling compute shader
+    # Frustum culling compute shader
     add_custom_command(
         OUTPUT ${BUILDING_SHADER_DIR}/frustum_cull.comp.spv
         COMMAND ${GLSLC_EXECUTABLE} -fshader-stage=compute
@@ -305,6 +322,25 @@ if(NOT EMSCRIPTEN)
                 ${BUILDING_SHADER_DIR}/frustum_cull.comp.glsl
         DEPENDS ${BUILDING_SHADER_DIR}/frustum_cull.comp.glsl
         COMMENT "Compiling frustum_cull.comp.glsl -> SPIR-V"
+    )
+
+    # Tonemap pass shaders (HDR render target → swapchain)
+    add_custom_command(
+        OUTPUT ${BUILDING_SHADER_DIR}/tonemap.vert.spv
+        COMMAND ${GLSLC_EXECUTABLE} -fshader-stage=vertex
+                -o ${BUILDING_SHADER_DIR}/tonemap.vert.spv
+                ${BUILDING_SHADER_DIR}/tonemap.vert.glsl
+        DEPENDS ${BUILDING_SHADER_DIR}/tonemap.vert.glsl
+        COMMENT "Compiling tonemap.vert.glsl -> SPIR-V"
+    )
+
+    add_custom_command(
+        OUTPUT ${BUILDING_SHADER_DIR}/tonemap.frag.spv
+        COMMAND ${GLSLC_EXECUTABLE} -fshader-stage=fragment
+                -o ${BUILDING_SHADER_DIR}/tonemap.frag.spv
+                ${BUILDING_SHADER_DIR}/tonemap.frag.glsl
+        DEPENDS ${BUILDING_SHADER_DIR}/tonemap.frag.glsl
+        COMMENT "Compiling tonemap.frag.glsl -> SPIR-V"
     )
 
     add_custom_target(building_shaders DEPENDS
@@ -317,6 +353,8 @@ if(NOT EMSCRIPTEN)
         ${BUILDING_SHADER_DIR}/irradiance_map.comp.spv
         ${BUILDING_SHADER_DIR}/prefilter_env.comp.spv
         ${BUILDING_SHADER_DIR}/frustum_cull.comp.spv
+        ${BUILDING_SHADER_DIR}/tonemap.vert.spv
+        ${BUILDING_SHADER_DIR}/tonemap.frag.spv
     )
     
     add_dependencies(FinanceCityEngine building_shaders)
@@ -367,6 +405,8 @@ else()
         src/game/world/Sector.hpp
         src/game/sync/PriceUpdate.hpp
         src/game/sync/MockDataGenerator.hpp
+        src/game/sync/WebSocketDataFeed.hpp
+        src/game/sync/WebSocketDataFeed.cpp
         src/game/utils/AnimationUtils.hpp
         src/game/utils/HeightCalculator.hpp
         # Effects Layer
@@ -395,6 +435,7 @@ else()
         rhi::factory
         stb_image
         tinyobjloader
+        nlohmann_json::nlohmann_json
     )
 
     target_compile_definitions(FinanceCityEngine PRIVATE
@@ -415,6 +456,8 @@ else()
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/skybox.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle.wgsl
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.wgsl
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/fxaa.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf_lut.comp.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/equirect_to_cubemap.comp.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/irradiance_map.comp.wgsl
@@ -440,6 +483,7 @@ else()
         "SHELL:-O2"
         "SHELL:--preload-file ${CMAKE_CURRENT_BINARY_DIR}/shaders@/shaders"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_shell.html"
+        "SHELL:-lwebsocket.js"
     )
     target_compile_options(FinanceCityEngine PRIVATE --use-port=emdawnwebgpu -O2 -g0 -ffunction-sections -fdata-sections)
 endif()

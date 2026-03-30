@@ -167,41 +167,44 @@ glm::vec3 WorldManager::allocatePositionInSector(const std::string& sectorId) {
 }
 
 void WorldManager::createDefaultSectors() {
-    // Sector 1: NASDAQ
+    // Sectors arranged in an L-shape around city center (750, 0, 750)
+    // Compact enough to see all at once from aerial camera
+
+    // Sector 1: NASDAQ - main large district (southwest)
     Sector nasdaq;
     nasdaq.id = "NASDAQ";
     nasdaq.displayName = "NASDAQ Technology";
-    nasdaq.centerPosition = glm::vec3(0.0f, 0.0f, 0.0f);
-    nasdaq.width = 1000.0f;
-    nasdaq.depth = 1000.0f;
+    nasdaq.centerPosition = glm::vec3(400.0f, 0.0f, 400.0f);
+    nasdaq.width = 600.0f;
+    nasdaq.depth = 600.0f;
     nasdaq.layoutType = GridLayoutType::Grid;
-    nasdaq.buildingSpacing = 50.0f;
+    nasdaq.buildingSpacing = 40.0f;
     nasdaq.borderColor = glm::vec4(0.0f, 1.0f, 1.0f, 1.0f);  // Cyan
     nasdaq.groundColor = glm::vec4(0.1f, 0.1f, 0.2f, 1.0f);  // Dark blue
     createSector(nasdaq);
 
-    // Sector 2: KOSDAQ
+    // Sector 2: KOSDAQ - medium district (east)
     Sector kosdaq;
     kosdaq.id = "KOSDAQ";
     kosdaq.displayName = "KOSDAQ Market";
-    kosdaq.centerPosition = glm::vec3(1500.0f, 0.0f, 0.0f);
-    kosdaq.width = 800.0f;
-    kosdaq.depth = 800.0f;
+    kosdaq.centerPosition = glm::vec3(1100.0f, 0.0f, 400.0f);
+    kosdaq.width = 500.0f;
+    kosdaq.depth = 500.0f;
     kosdaq.layoutType = GridLayoutType::Grid;
-    kosdaq.buildingSpacing = 50.0f;
+    kosdaq.buildingSpacing = 40.0f;
     kosdaq.borderColor = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);  // Yellow
     kosdaq.groundColor = glm::vec4(0.2f, 0.1f, 0.1f, 1.0f);  // Dark red
     createSector(kosdaq);
 
-    // Sector 3: Cryptocurrency
+    // Sector 3: Cryptocurrency - compact district (south)
     Sector crypto;
     crypto.id = "CRYPTO";
     crypto.displayName = "Cryptocurrency";
-    crypto.centerPosition = glm::vec3(0.0f, 0.0f, 1500.0f);
-    crypto.width = 600.0f;
-    crypto.depth = 600.0f;
+    crypto.centerPosition = glm::vec3(400.0f, 0.0f, 1100.0f);
+    crypto.width = 400.0f;
+    crypto.depth = 400.0f;
     crypto.layoutType = GridLayoutType::Grid;
-    crypto.buildingSpacing = 60.0f;
+    crypto.buildingSpacing = 40.0f;
     crypto.borderColor = glm::vec4(1.0f, 0.0f, 1.0f, 1.0f);  // Magenta
     crypto.groundColor = glm::vec4(0.1f, 0.2f, 0.1f, 1.0f);  // Dark green
     createSector(crypto);

@@ -49,19 +49,7 @@ public:
     Renderer& operator=(Renderer&&) = delete;
 
     /**
-     * @brief Load model from file
-     * @param modelPath Path to model file
-     */
-    void loadModel(const std::string& modelPath);
-
-    /**
-     * @brief Load texture from file
-     * @param texturePath Path to texture file
-     */
-    void loadTexture(const std::string& texturePath);
-
-    /**
-     * @brief Draw a single frame using RHI rendering (Phase 7: Full RHI migration)
+     * @brief Draw a single frame
      */
     void drawFrame();
 
@@ -71,9 +59,16 @@ public:
     void waitIdle();
 
     /**
-     * @brief Handle framebuffer resize
+     * @brief Handle framebuffer resize (reads new size from GLFW)
      */
     void handleFramebufferResize();
+
+    /**
+     * @brief Handle framebuffer resize with explicit dimensions (bypasses GLFW query).
+     * Used on WASM/Emscripten where glfwGetFramebufferSize may lag behind the actual
+     * browser viewport size change.
+     */
+    void handleFramebufferResize(int width, int height);
 
     /**
      * @brief Update camera matrices and position
@@ -138,7 +133,7 @@ public:
      */
     void submitParticleSystem(effects::ParticleSystem* particleSystem);
 
-    // Phase 3.3: Lighting configuration
+    // Lighting configuration
     void setSunDirection(const glm::vec3& dir) { sunDirection = glm::normalize(dir); }
     glm::vec3 getSunDirection() const { return sunDirection; }
     void setSunIntensity(float intensity) { sunIntensity = intensity; }
@@ -176,7 +171,7 @@ private:
     std::unique_ptr<ResourceManager> resourceManager;
     std::unique_ptr<SceneManager> sceneManager;
 #ifndef __EMSCRIPTEN__
-    std::unique_ptr<class ImGuiManager> imguiManager;  // Phase 6: ImGui integration
+    std::unique_ptr<class ImGuiManager> imguiManager;
 #endif
 
     // RHI core resources
@@ -185,12 +180,6 @@ private:
     std::vector<std::unique_ptr<rhi::RHIBuffer>> rhiUniformBuffers;
     std::unique_ptr<rhi::RHIBindGroupLayout> rhiBindGroupLayout;
     std::vector<std::unique_ptr<rhi::RHIBindGroup>> rhiBindGroups;
-
-    // Legacy RHI pipeline (OBJ model rendering, unused in finance-city flow)
-    std::unique_ptr<rhi::RHIShader> rhiVertexShader;
-    std::unique_ptr<rhi::RHIShader> rhiFragmentShader;
-    std::unique_ptr<rhi::RHIPipelineLayout> rhiPipelineLayout;
-    std::unique_ptr<rhi::RHIRenderPipeline> rhiPipeline;
 
     // Building Instancing Pipeline
     std::unique_ptr<rhi::RHIShader> buildingVertexShader;
@@ -232,11 +221,6 @@ private:
         uint32_t pad[2];
     };
 
-    // Legacy RHI Vertex/Index Buffers (unused in finance-city flow)
-    std::unique_ptr<rhi::RHIBuffer> rhiVertexBuffer;
-    std::unique_ptr<rhi::RHIBuffer> rhiIndexBuffer;
-    uint32_t rhiIndexCount = 0;
-
     // For uniform buffer animation
     std::chrono::time_point<std::chrono::high_resolution_clock> startTime;
 
@@ -266,18 +250,48 @@ private:
     float shadowStrength = 0.7f;
     float exposure = 1.0f;
 
+#ifdef __EMSCRIPTEN__
+    // HDR Render Target (RGBA16Float — geometry renders here)
+    std::unique_ptr<rhi::RHITexture> hdrColorTexture;
+    std::unique_ptr<rhi::RHITextureView> hdrColorView;
+    std::unique_ptr<rhi::RHISampler> hdrSampler;
+
+    // LDR Intermediate Target (RGBA8Unorm — tonemap writes here, FXAA reads from here)
+    std::unique_ptr<rhi::RHITexture> ldrColorTexture;
+    std::unique_ptr<rhi::RHITextureView> ldrColorView;
+
+    // Tonemap Pipeline (HDR → LDR intermediate: ACES + gamma)
+    std::unique_ptr<rhi::RHIShader> tonemapVertexShader;
+    std::unique_ptr<rhi::RHIShader> tonemapFragmentShader;
+    std::unique_ptr<rhi::RHIBindGroupLayout> tonemapBindGroupLayout;
+    std::unique_ptr<rhi::RHIBindGroup> tonemapBindGroup;
+    std::unique_ptr<rhi::RHIPipelineLayout> tonemapPipelineLayout;
+    std::unique_ptr<rhi::RHIRenderPipeline> tonemapPipeline;
+
+    // FXAA Pipeline (LDR intermediate → swapchain: anti-aliasing)
+    std::unique_ptr<rhi::RHIShader> fxaaVertexShader;
+    std::unique_ptr<rhi::RHIShader> fxaaFragmentShader;
+    std::unique_ptr<rhi::RHIBindGroupLayout> fxaaBindGroupLayout;
+    std::unique_ptr<rhi::RHIBindGroup> fxaaBindGroup;
+    std::unique_ptr<rhi::RHIPipelineLayout> fxaaPipelineLayout;
+    std::unique_ptr<rhi::RHIRenderPipeline> fxaaPipeline;
+#endif
+
     // RHI initialization methods
     void createRHIDepthResources();
     void createRHIUniformBuffers();
     void createRHIBindGroups();
-    void createRHIPipeline();
-    void createRHIBuffers();
     void createBuildingPipeline();
     void createParticleRenderer();
     void createSkyboxRenderer();
     void createShadowRenderer();
     void createIBL();
     void createCullingPipeline();
+#ifdef __EMSCRIPTEN__
+    void createHDRRenderTarget();
+    void createTonemapPipeline();
+    void createFXAAPipeline();
+#endif
     void performFrustumCulling(rhi::RHICommandEncoder* encoder, uint32_t frameIndex,
                                uint32_t objectCount, uint32_t indexCount);
     void performFrustumCullingAsync(uint32_t frameIndex, uint32_t objectCount, uint32_t indexCount);

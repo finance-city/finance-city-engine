@@ -186,8 +186,8 @@ check-emscripten:
 		echo "$(COLOR_GREEN)Manual Setup:$(COLOR_RESET)"; \
 		echo "  git clone https://github.com/emscripten-core/emsdk.git ~/emsdk"; \
 		echo "  cd ~/emsdk"; \
-		echo "  ./emsdk install 3.1.71"; \
-		echo "  ./emsdk activate 3.1.71"; \
+		echo "  ./emsdk install 4.0.10"; \
+		echo "  ./emsdk activate 4.0.10"; \
 		echo "  source ~/emsdk/emsdk_env.sh"; \
 		echo ""; \
 		echo "$(COLOR_BLUE)After installation, run 'make wasm' again.$(COLOR_RESET)"; \

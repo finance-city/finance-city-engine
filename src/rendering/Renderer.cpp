@@ -45,6 +45,11 @@ Renderer::Renderer(GLFWwindow* window,
     // Initialize IBL (must be before building pipeline for bind group layout)
     createIBL();
 
+#ifdef __EMSCRIPTEN__
+    // HDR render target must exist before building pipeline (color format differs)
+    createHDRRenderTarget();
+#endif
+
     // Create building pipeline for game world rendering
     createBuildingPipeline();
 
@@ -71,6 +76,12 @@ Renderer::Renderer(GLFWwindow* window,
     createSkyboxRenderer();
     createShadowRenderer();
 
+#ifdef __EMSCRIPTEN__
+    // Post-process pipelines must be created after HDR render target (bind groups reference texture views)
+    createTonemapPipeline();
+    createFXAAPipeline();
+#endif
+
     // Log GPU memory statistics
     rhiBridge->getDevice()->logMemoryStats();
 }
@@ -83,24 +94,41 @@ Renderer::~Renderer() {
     // All resources cleaned up by RAII in reverse declaration order
 }
 
-void Renderer::loadModel(const std::string& modelPath) {
-    sceneManager->loadMesh(modelPath);  // Delegates to SceneManager
-
-    // Phase 4.5: Create RHI buffers after loading mesh
-    createRHIBuffers();
-}
-
-void Renderer::loadTexture(const std::string& texturePath) {
-    resourceManager->loadTexture(texturePath);  // Delegates to ResourceManager
-    // Descriptor updates handled via RHI bind groups
-}
-
 void Renderer::waitIdle() {
     rhiBridge->waitIdle();
 }
 
 void Renderer::handleFramebufferResize() {
     recreateSwapchain();
+}
+
+void Renderer::handleFramebufferResize(int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    rhiBridge->waitIdle();
+    rhiBridge->createSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height), true);
+    createRHIDepthResources();
+
+#ifdef __EMSCRIPTEN__
+    createHDRRenderTarget();
+    if (tonemapBindGroupLayout && hdrColorView && hdrSampler) {
+        rhi::BindGroupDesc bindGroupDesc;
+        bindGroupDesc.layout = tonemapBindGroupLayout.get();
+        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, hdrColorView.get()));
+        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+        bindGroupDesc.label = "Tonemap Bind Group";
+        tonemapBindGroup = rhiBridge->getDevice()->createBindGroup(bindGroupDesc);
+    }
+    if (fxaaBindGroupLayout && ldrColorView && hdrSampler) {
+        rhi::BindGroupDesc bindGroupDesc;
+        bindGroupDesc.layout = fxaaBindGroupLayout.get();
+        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, ldrColorView.get()));
+        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+        bindGroupDesc.label = "FXAA Bind Group";
+        fxaaBindGroup = rhiBridge->getDevice()->createBindGroup(bindGroupDesc);
+    }
+#endif
 }
 
 void Renderer::updateCamera(const glm::mat4& view, const glm::mat4& projection, const glm::vec3& position) {
@@ -149,7 +177,27 @@ void Renderer::recreateSwapchain() {
     // Recreate RHI swapchain and depth resources
     rhiBridge->createSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height), true);
     createRHIDepthResources();
-    createRHIPipeline();  // Pipeline needs recreation with new render pass
+
+#ifdef __EMSCRIPTEN__
+    // Recreate HDR + LDR textures (size changed) and update post-process bind groups
+    createHDRRenderTarget();
+    if (tonemapBindGroupLayout && hdrColorView && hdrSampler) {
+        rhi::BindGroupDesc bindGroupDesc;
+        bindGroupDesc.layout = tonemapBindGroupLayout.get();
+        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, hdrColorView.get()));
+        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+        bindGroupDesc.label = "Tonemap Bind Group";
+        tonemapBindGroup = rhiBridge->getDevice()->createBindGroup(bindGroupDesc);
+    }
+    if (fxaaBindGroupLayout && ldrColorView && hdrSampler) {
+        rhi::BindGroupDesc bindGroupDesc;
+        bindGroupDesc.layout = fxaaBindGroupLayout.get();
+        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, ldrColorView.get()));
+        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+        bindGroupDesc.label = "FXAA Bind Group";
+        fxaaBindGroup = rhiBridge->getDevice()->createBindGroup(bindGroupDesc);
+    }
+#endif
 
     // Notify ImGui of resize
 #ifndef __EMSCRIPTEN__
@@ -161,7 +209,6 @@ void Renderer::recreateSwapchain() {
 
 void Renderer::initImGui(GLFWwindow* window) {
 #ifndef __EMSCRIPTEN__
-    // Phase 6: Create ImGui manager using RHI types
     auto* rhiDevice = rhiBridge->getDevice();
     auto* rhiSwapchain = rhiBridge->getSwapchain();
 
@@ -174,7 +221,7 @@ void Renderer::initImGui(GLFWwindow* window) {
 }
 
 // ============================================================================
-// Phase 4: RHI Resource Creation (parallel to legacy resources)
+// RHI Resource Creation
 // ============================================================================
 
 void Renderer::createRHIDepthResources() {
@@ -193,7 +240,7 @@ void Renderer::createRHIDepthResources() {
     depthDesc.size = rhi::Extent3D(rhiSwapchain->getWidth(), rhiSwapchain->getHeight(), 1);
     depthDesc.format = rhi::TextureFormat::Depth32Float;
     depthDesc.usage = rhi::TextureUsage::DepthStencil;
-    depthDesc.transient = true;  // Phase 3.1: Depth buffer is frame-temporary, enable lazily allocated memory
+    depthDesc.transient = true;  // Depth buffer is frame-temporary — enables lazily allocated (memoryless) memory on mobile/tiled GPUs
     depthDesc.label = "RHI Depth Image";
 
     rhiDepthImage = rhiDevice->createTexture(depthDesc);
@@ -259,238 +306,6 @@ void Renderer::createRHIBindGroups() {
 
         bindGroupDesc.label = "RHI Main Bind Group";
         rhiBindGroups.push_back(rhiDevice->createBindGroup(bindGroupDesc));
-    }
-}
-
-// ============================================================================
-// Phase 4.4: RHI Pipeline Creation
-// ============================================================================
-
-void Renderer::createRHIPipeline() {
-    if (!rhiBridge || !rhiBridge->isReady() || !rhiBindGroupLayout) {
-        return;
-    }
-
-    // Phase 8: Ensure swapchain is created before pipeline (needed for render pass on Linux)
-    if (!rhiBridge->getSwapchain()) {
-        int width, height;
-        glfwGetFramebufferSize(window, &width, &height);
-        rhiBridge->createSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height), true);
-    }
-
-    // Select shader path
-    std::string shaderPath = "shaders/slang.spv";
-
-    // Create vertex shader
-    rhiVertexShader = rhiBridge->createShaderFromFile(
-        shaderPath,
-        rhi::ShaderStage::Vertex,
-        "vertMain"
-    );
-
-    // Create fragment shader
-    rhiFragmentShader = rhiBridge->createShaderFromFile(
-        shaderPath,
-        rhi::ShaderStage::Fragment,
-        "fragMain"
-    );
-
-    if (!rhiVertexShader || !rhiFragmentShader) {
-        LOG_ERROR("Renderer") << "Failed to create RHI shaders";
-        return;
-    }
-
-    // Create pipeline layout
-    rhi::PipelineLayoutDesc layoutDesc;
-    layoutDesc.bindGroupLayouts.push_back(rhiBindGroupLayout.get());
-    rhiPipelineLayout = rhiBridge->createPipelineLayout(layoutDesc);
-
-    if (!rhiPipelineLayout) {
-        LOG_ERROR("Renderer") << "Failed to create RHI pipeline layout";
-        return;
-    }
-
-    // Setup vertex state - matches Vertex struct
-    rhi::VertexBufferLayout vertexLayout;
-    vertexLayout.stride = sizeof(Vertex);
-    vertexLayout.inputRate = rhi::VertexInputRate::Vertex;
-    vertexLayout.attributes = {
-        rhi::VertexAttribute(0, 0, rhi::TextureFormat::RGB32Float, offsetof(Vertex, pos)),    // position
-        rhi::VertexAttribute(1, 0, rhi::TextureFormat::RGB32Float, offsetof(Vertex, normal)),  // normal
-        rhi::VertexAttribute(2, 0, rhi::TextureFormat::RG32Float, offsetof(Vertex, texCoord)) // texCoord
-    };
-
-    // Create render pipeline descriptor
-    rhi::RenderPipelineDesc pipelineDesc;
-    pipelineDesc.vertexShader = rhiVertexShader.get();
-    pipelineDesc.fragmentShader = rhiFragmentShader.get();
-    pipelineDesc.layout = rhiPipelineLayout.get();
-    pipelineDesc.vertex.buffers.push_back(vertexLayout);
-
-    // Primitive state
-    pipelineDesc.primitive.topology = rhi::PrimitiveTopology::TriangleList;
-    pipelineDesc.primitive.cullMode = rhi::CullMode::Back;
-    pipelineDesc.primitive.frontFace = rhi::FrontFace::Clockwise;  // Cube mesh uses CW winding
-
-    // Depth-stencil state
-    rhi::DepthStencilState depthStencilState;
-    depthStencilState.depthTestEnabled = true;
-    depthStencilState.depthWriteEnabled = true;
-    depthStencilState.depthCompare = rhi::CompareOp::Less;
-    depthStencilState.format = rhi::TextureFormat::Depth32Float;
-    pipelineDesc.depthStencil = &depthStencilState;
-
-    // Phase 7.5: Color target - use actual swapchain format to avoid validation errors
-    rhi::ColorTargetState colorTarget;
-    auto* swapchain = rhiBridge->getSwapchain();
-    if (swapchain) {
-        colorTarget.format = swapchain->getFormat();  // Match swapchain format (SRGB or UNORM)
-    } else {
-        colorTarget.format = rhi::TextureFormat::BGRA8UnormSrgb;  // Default to SRGB
-    }
-    colorTarget.blend.blendEnabled = false;
-    pipelineDesc.colorTargets.push_back(colorTarget);
-
-    pipelineDesc.label = "RHI Main Pipeline";
-
-    // Phase 9: Ensure platform-specific render resources are ready (uses RHI abstraction)
-    // - On Linux: Creates traditional render pass and framebuffers
-    // - On macOS/Windows: No-op (uses dynamic rendering)
-    if (swapchain) {
-        swapchain->ensureRenderResourcesReady(rhiDepthImageView.get());
-
-#ifdef __linux__
-        // Linux still needs native render pass handle for pipeline creation
-        auto* vulkanSwapchain = dynamic_cast<RHI::Vulkan::VulkanRHISwapchain*>(swapchain);
-        if (vulkanSwapchain) {
-            VkRenderPass vkPass = static_cast<VkRenderPass>(vulkanSwapchain->getRenderPass());
-            pipelineDesc.nativeRenderPass = reinterpret_cast<void*>(vkPass);
-        }
-#endif
-    }
-
-    // Create pipeline
-    rhiPipeline = rhiBridge->createRenderPipeline(pipelineDesc);
-
-    if (rhiPipeline) {
-        LOG_INFO("Renderer") << "RHI Pipeline created successfully";
-    } else {
-        LOG_ERROR("Renderer") << "Failed to create RHI pipeline";
-    }
-}
-
-// ============================================================================
-// Phase 4.5: RHI Vertex/Index Buffer Creation
-// ============================================================================
-
-void Renderer::createRHIBuffers() {
-    if (!rhiBridge || !rhiBridge->isReady() || !sceneManager) {
-        return;
-    }
-
-    auto* mesh = sceneManager->getPrimaryMesh();
-    if (!mesh || !mesh->hasData()) {
-        return;
-    }
-
-    auto* rhiDevice = rhiBridge->getDevice();
-
-    // Get raw vertex and index data from mesh
-    const auto& vertices = mesh->getVertices();
-    const auto& indices = mesh->getIndices();
-
-    size_t vertexCount = vertices.size();
-    size_t indexCount = indices.size();
-    size_t vertexBufferSize = vertexCount * sizeof(Vertex);
-    size_t indexBufferSize = indexCount * sizeof(uint32_t);
-
-    // Create vertex staging buffer (host-visible, mapped at creation)
-    rhi::BufferDesc vertexStagingDesc;
-    vertexStagingDesc.size = vertexBufferSize;
-    vertexStagingDesc.usage = rhi::BufferUsage::CopySrc | rhi::BufferUsage::MapWrite;
-    vertexStagingDesc.mappedAtCreation = true;
-    vertexStagingDesc.label = "RHI Vertex Staging Buffer";
-
-    auto vertexStagingBuffer = rhiDevice->createBuffer(vertexStagingDesc);
-
-    // Copy vertex data to staging buffer
-    if (vertexStagingBuffer) {
-        void* mappedData = vertexStagingBuffer->getMappedData();
-        if (mappedData) {
-            memcpy(mappedData, vertices.data(), vertexBufferSize);
-            vertexStagingBuffer->unmap();
-        }
-    }
-
-    // Create device-local vertex buffer
-    rhi::BufferDesc vertexBufferDesc;
-    vertexBufferDesc.size = vertexBufferSize;
-    vertexBufferDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::CopyDst;
-    vertexBufferDesc.mappedAtCreation = false;
-    vertexBufferDesc.label = "RHI Vertex Buffer";
-
-    rhiVertexBuffer = rhiDevice->createBuffer(vertexBufferDesc);
-
-    // Create index staging buffer
-    rhi::BufferDesc indexStagingDesc;
-    indexStagingDesc.size = indexBufferSize;
-    indexStagingDesc.usage = rhi::BufferUsage::CopySrc | rhi::BufferUsage::MapWrite;
-    indexStagingDesc.mappedAtCreation = true;
-    indexStagingDesc.label = "RHI Index Staging Buffer";
-
-    auto indexStagingBuffer = rhiDevice->createBuffer(indexStagingDesc);
-
-    // Copy index data to staging buffer
-    if (indexStagingBuffer) {
-        void* mappedData = indexStagingBuffer->getMappedData();
-        if (mappedData) {
-            memcpy(mappedData, indices.data(), indexBufferSize);
-            indexStagingBuffer->unmap();
-        }
-    }
-
-    // Create device-local index buffer
-    rhi::BufferDesc indexBufferDesc;
-    indexBufferDesc.size = indexBufferSize;
-    indexBufferDesc.usage = rhi::BufferUsage::Index | rhi::BufferUsage::CopyDst;
-    indexBufferDesc.mappedAtCreation = false;
-    indexBufferDesc.label = "RHI Index Buffer";
-
-    rhiIndexBuffer = rhiDevice->createBuffer(indexBufferDesc);
-    rhiIndexCount = static_cast<uint32_t>(indexCount);
-
-    // Copy data from staging to device-local buffers using command buffer
-    if (rhiVertexBuffer && rhiIndexBuffer && vertexStagingBuffer && indexStagingBuffer) {
-        auto encoder = rhiDevice->createCommandEncoder();
-        if (encoder) {
-            encoder->copyBufferToBuffer(
-                vertexStagingBuffer.get(), 0,
-                rhiVertexBuffer.get(), 0,
-                vertexBufferSize
-            );
-            encoder->copyBufferToBuffer(
-                indexStagingBuffer.get(), 0,
-                rhiIndexBuffer.get(), 0,
-                indexBufferSize
-            );
-
-            auto commandBuffer = encoder->finish();
-            if (commandBuffer) {
-                // Submit and wait for completion
-                auto* queue = rhiDevice->getQueue(rhi::QueueType::Graphics);
-                auto fence = rhiDevice->createFence(false);
-                queue->submit(commandBuffer.get(), fence.get());
-                fence->wait();
-
-                // Phase 7.5: Wait for device idle to ensure command buffer is fully retired
-                // before it's destroyed (prevents "command buffer in use" error)
-                rhiDevice->waitIdle();
-            }
-        }
-
-        LOG_INFO("Renderer") << "RHI buffers uploaded: " 
-                  << vertexCount << " vertices (" << vertexBufferSize << " bytes), " 
-                  << indexCount << " indices (" << indexBufferSize << " bytes)";
     }
 }
 
@@ -616,7 +431,9 @@ void Renderer::createBuildingPipeline() {
         buildingBindGroups.push_back(nullptr);
     }
 
-    // Phase 2.1+2.2: Create SSBO bind group layout (set 1) for per-object data + visible indices
+    // Create SSBO bind group layout (set 1):
+    //   binding 0 — per-object data (ObjectData array)
+    //   binding 1 — visible indices from GPU frustum culling
     {
         rhi::BindGroupLayoutDesc ssboLayoutDesc;
 
@@ -626,7 +443,6 @@ void Renderer::createBuildingPipeline() {
         ssboEntry.type = rhi::BindingType::ReadOnlyStorageBuffer; // vertex stage requires read-only
         ssboLayoutDesc.entries.push_back(ssboEntry);
 
-        // Phase 2.2: Visible indices buffer for frustum culling indirection
         rhi::BindGroupLayoutEntry visibleIndicesEntry;
         visibleIndicesEntry.binding = 1;
         visibleIndicesEntry.visibility = rhi::ShaderStage::Vertex;
@@ -653,8 +469,7 @@ void Renderer::createBuildingPipeline() {
         return;
     }
 
-    // Setup vertex state - per-vertex attributes only (binding 0)
-    // Phase 2.1: Instance data now comes from SSBO, not vertex attributes
+    // Vertex layout — per-vertex attributes only; instance data is read from SSBO in the shader
     rhi::VertexBufferLayout vertexLayout;
     vertexLayout.stride = sizeof(Vertex);
     vertexLayout.inputRate = rhi::VertexInputRate::Vertex;
@@ -684,31 +499,40 @@ void Renderer::createBuildingPipeline() {
     depthStencilState.format = rhi::TextureFormat::Depth32Float;
     pipelineDesc.depthStencil = &depthStencilState;
 
-    // Color target - match swapchain format
+    // Color target format:
+    //   WebGPU: RGBA16Float (geometry renders to HDR offscreen target)
+    //   Vulkan: swapchain format (geometry renders directly to swapchain)
     rhi::ColorTargetState colorTarget;
+#ifdef __EMSCRIPTEN__
+    colorTarget.format = rhi::TextureFormat::RGBA16Float;
+#else
     auto* swapchain = rhiBridge->getSwapchain();
     if (swapchain) {
         colorTarget.format = swapchain->getFormat();
     } else {
         colorTarget.format = rhi::TextureFormat::BGRA8UnormSrgb;
     }
+#endif
     colorTarget.blend.blendEnabled = false;
     pipelineDesc.colorTargets.push_back(colorTarget);
 
     pipelineDesc.label = "Building Instancing Pipeline";
 
     // Ensure platform-specific render resources are ready
-    if (swapchain) {
-        swapchain->ensureRenderResourcesReady(rhiDepthImageView.get());
+    {
+        auto* swapchain = rhiBridge->getSwapchain();
+        if (swapchain) {
+            swapchain->ensureRenderResourcesReady(rhiDepthImageView.get());
 
 #ifdef __linux__
-        // Linux needs native render pass handle for pipeline creation
-        auto* vulkanSwapchain = dynamic_cast<RHI::Vulkan::VulkanRHISwapchain*>(swapchain);
-        if (vulkanSwapchain) {
-            VkRenderPass vkPass = static_cast<VkRenderPass>(vulkanSwapchain->getRenderPass());
-            pipelineDesc.nativeRenderPass = reinterpret_cast<void*>(vkPass);
-        }
+            // Linux needs native render pass handle for pipeline creation
+            auto* vulkanSwapchain = dynamic_cast<RHI::Vulkan::VulkanRHISwapchain*>(swapchain);
+            if (vulkanSwapchain) {
+                VkRenderPass vkPass = static_cast<VkRenderPass>(vulkanSwapchain->getRenderPass());
+                pipelineDesc.nativeRenderPass = reinterpret_cast<void*>(vkPass);
+            }
 #endif
+        }
     }
 
     // Create pipeline
@@ -722,7 +546,7 @@ void Renderer::createBuildingPipeline() {
 }
 
 // ============================================================================
-// Phase 3.1: Particle Renderer Creation
+// Particle Renderer Creation
 // ============================================================================
 
 void Renderer::createParticleRenderer() {
@@ -741,8 +565,13 @@ void Renderer::createParticleRenderer() {
     // Create particle renderer
     particleRenderer = std::make_unique<effects::ParticleRenderer>(rhiDevice, rhiQueue);
 
-    // Initialize with swapchain format and depth format
+    // WebGPU: geometry renders to HDR offscreen target (RGBA16Float)
+    // Vulkan: geometry renders directly to swapchain
+#ifdef __EMSCRIPTEN__
+    rhi::TextureFormat colorFormat = rhi::TextureFormat::RGBA16Float;
+#else
     rhi::TextureFormat colorFormat = swapchain->getFormat();
+#endif
     rhi::TextureFormat depthFormat = rhi::TextureFormat::Depth32Float;
 
     // Get native render pass for Linux
@@ -763,7 +592,7 @@ void Renderer::createParticleRenderer() {
 }
 
 // ============================================================================
-// Phase 3.3: Skybox Renderer Creation
+// Skybox Renderer Creation
 // ============================================================================
 
 void Renderer::createSkyboxRenderer() {
@@ -782,8 +611,13 @@ void Renderer::createSkyboxRenderer() {
     // Create skybox renderer
     skyboxRenderer = std::make_unique<rendering::SkyboxRenderer>(rhiDevice, rhiQueue);
 
-    // Initialize with swapchain format and depth format
+    // WebGPU: geometry renders to HDR offscreen target (RGBA16Float)
+    // Vulkan: geometry renders directly to swapchain
+#ifdef __EMSCRIPTEN__
+    rhi::TextureFormat colorFormat = rhi::TextureFormat::RGBA16Float;
+#else
     rhi::TextureFormat colorFormat = swapchain->getFormat();
+#endif
     rhi::TextureFormat depthFormat = rhi::TextureFormat::Depth32Float;
 
     // Get native render pass for Linux
@@ -886,6 +720,269 @@ void Renderer::createIBL() {
     }
 }
 
+#ifdef __EMSCRIPTEN__
+// ============================================================================
+// HDR Render Target Creation (WebGPU only)
+// ============================================================================
+
+void Renderer::createHDRRenderTarget() {
+    if (!rhiBridge || !rhiBridge->isReady()) {
+        return;
+    }
+
+    auto* rhiDevice = rhiBridge->getDevice();
+    auto* swapchain = rhiBridge->getSwapchain();
+    if (!rhiDevice || !swapchain) {
+        return;
+    }
+
+    uint32_t width = swapchain->getWidth();
+    uint32_t height = swapchain->getHeight();
+
+    // Create RGBA16Float HDR color texture (geometry renders here instead of swapchain)
+    rhi::TextureDesc colorDesc;
+    colorDesc.size = rhi::Extent3D(width, height, 1);
+    colorDesc.format = rhi::TextureFormat::RGBA16Float;
+    colorDesc.usage = rhi::TextureUsage::RenderTarget | rhi::TextureUsage::Sampled;
+    colorDesc.label = "HDR Color Target";
+    hdrColorTexture = rhiDevice->createTexture(colorDesc);
+
+    if (hdrColorTexture) {
+        rhi::TextureViewDesc viewDesc;
+        viewDesc.format = rhi::TextureFormat::RGBA16Float;
+        viewDesc.dimension = rhi::TextureViewDimension::View2D;
+        hdrColorView = hdrColorTexture->createView(viewDesc);
+        LOG_INFO("Renderer") << "HDR render target created (" << width << "x" << height << ")";
+    } else {
+        LOG_ERROR("Renderer") << "Failed to create HDR color texture";
+        return;
+    }
+
+    // Create sampler (shared by tonemap and FXAA passes)
+    rhi::SamplerDesc samplerDesc;
+    samplerDesc.magFilter = rhi::FilterMode::Linear;
+    samplerDesc.minFilter = rhi::FilterMode::Linear;
+    samplerDesc.addressModeU = rhi::AddressMode::ClampToEdge;
+    samplerDesc.addressModeV = rhi::AddressMode::ClampToEdge;
+    samplerDesc.label = "Post-process Sampler";
+    hdrSampler = rhiDevice->createSampler(samplerDesc);
+
+    // Create RGBA8Unorm LDR intermediate texture (tonemap writes here; FXAA reads from here)
+    rhi::TextureDesc ldrDesc;
+    ldrDesc.size = rhi::Extent3D(width, height, 1);
+    ldrDesc.format = rhi::TextureFormat::RGBA8Unorm;
+    ldrDesc.usage = rhi::TextureUsage::RenderTarget | rhi::TextureUsage::Sampled;
+    ldrDesc.label = "LDR Intermediate Target";
+    ldrColorTexture = rhiDevice->createTexture(ldrDesc);
+
+    if (ldrColorTexture) {
+        rhi::TextureViewDesc viewDesc;
+        viewDesc.format = rhi::TextureFormat::RGBA8Unorm;
+        viewDesc.dimension = rhi::TextureViewDimension::View2D;
+        ldrColorView = ldrColorTexture->createView(viewDesc);
+    } else {
+        LOG_ERROR("Renderer") << "Failed to create LDR intermediate texture";
+    }
+}
+
+// ============================================================================
+// Tonemap Pipeline Creation (WebGPU only)
+// ============================================================================
+
+void Renderer::createTonemapPipeline() {
+    if (!rhiBridge || !rhiBridge->isReady() || !hdrColorView || !hdrSampler) {
+        return;
+    }
+
+    auto* rhiDevice = rhiBridge->getDevice();
+
+    // Load WGSL shader (single file contains both vertex and fragment entry points)
+    auto wgslCodeRaw = FileUtils::readFile("shaders/tonemap.wgsl");
+    if (wgslCodeRaw.empty()) {
+        LOG_ERROR("Renderer") << "Failed to read tonemap.wgsl";
+        return;
+    }
+    std::vector<uint8_t> wgslCode(wgslCodeRaw.begin(), wgslCodeRaw.end());
+
+    rhi::ShaderSource vertSource(rhi::ShaderLanguage::WGSL, wgslCode, rhi::ShaderStage::Vertex, "vs_main");
+    tonemapVertexShader = rhiDevice->createShader(rhi::ShaderDesc(vertSource, "TonemapVertexShader"));
+
+    rhi::ShaderSource fragSource(rhi::ShaderLanguage::WGSL, wgslCode, rhi::ShaderStage::Fragment, "fs_main");
+    tonemapFragmentShader = rhiDevice->createShader(rhi::ShaderDesc(fragSource, "TonemapFragmentShader"));
+
+    if (!tonemapVertexShader || !tonemapFragmentShader) {
+        LOG_ERROR("Renderer") << "Failed to create tonemap shaders";
+        return;
+    }
+
+    // Bind group layout: binding 0 = HDR texture, binding 1 = sampler
+    rhi::BindGroupLayoutDesc layoutDesc;
+
+    rhi::BindGroupLayoutEntry texEntry;
+    texEntry.binding = 0;
+    texEntry.visibility = rhi::ShaderStage::Fragment;
+    texEntry.type = rhi::BindingType::SampledTexture;
+    layoutDesc.entries.push_back(texEntry);
+
+    rhi::BindGroupLayoutEntry samplerEntry;
+    samplerEntry.binding = 1;
+    samplerEntry.visibility = rhi::ShaderStage::Fragment;
+    samplerEntry.type = rhi::BindingType::Sampler;
+    layoutDesc.entries.push_back(samplerEntry);
+
+    layoutDesc.label = "Tonemap Bind Group Layout";
+    tonemapBindGroupLayout = rhiDevice->createBindGroupLayout(layoutDesc);
+
+    if (!tonemapBindGroupLayout) {
+        LOG_ERROR("Renderer") << "Failed to create tonemap bind group layout";
+        return;
+    }
+
+    // Bind group: HDR texture view + sampler
+    rhi::BindGroupDesc bindGroupDesc;
+    bindGroupDesc.layout = tonemapBindGroupLayout.get();
+    bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, hdrColorView.get()));
+    bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+    bindGroupDesc.label = "Tonemap Bind Group";
+    tonemapBindGroup = rhiDevice->createBindGroup(bindGroupDesc);
+
+    // Pipeline layout
+    rhi::PipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.bindGroupLayouts.push_back(tonemapBindGroupLayout.get());
+    tonemapPipelineLayout = rhiBridge->createPipelineLayout(pipelineLayoutDesc);
+
+    if (!tonemapPipelineLayout) {
+        LOG_ERROR("Renderer") << "Failed to create tonemap pipeline layout";
+        return;
+    }
+
+    // Pipeline — fullscreen triangle (no vertex buffer, no depth test)
+    rhi::RenderPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = tonemapVertexShader.get();
+    pipelineDesc.fragmentShader = tonemapFragmentShader.get();
+    pipelineDesc.layout = tonemapPipelineLayout.get();
+
+    pipelineDesc.primitive.topology = rhi::PrimitiveTopology::TriangleList;
+    pipelineDesc.primitive.cullMode = rhi::CullMode::None;
+    pipelineDesc.primitive.frontFace = rhi::FrontFace::Clockwise;
+
+    // Color target: RGBA8Unorm intermediate (FXAA reads from here)
+    rhi::ColorTargetState colorTarget;
+    colorTarget.format = rhi::TextureFormat::RGBA8Unorm;
+    colorTarget.blend.blendEnabled = false;
+    pipelineDesc.colorTargets.push_back(colorTarget);
+
+    pipelineDesc.label = "Tonemap Pipeline";
+
+    tonemapPipeline = rhiBridge->createRenderPipeline(pipelineDesc);
+
+    if (tonemapPipeline) {
+        LOG_INFO("Renderer") << "Tonemap pipeline created successfully";
+    } else {
+        LOG_ERROR("Renderer") << "Failed to create tonemap pipeline";
+    }
+}
+
+// ============================================================================
+// FXAA Pipeline Creation (WebGPU only)
+// ============================================================================
+
+void Renderer::createFXAAPipeline() {
+    if (!rhiBridge || !rhiBridge->isReady() || !ldrColorView || !hdrSampler) {
+        return;
+    }
+
+    auto* rhiDevice = rhiBridge->getDevice();
+
+    // Load WGSL shader
+    auto wgslCodeRaw = FileUtils::readFile("shaders/fxaa.wgsl");
+    if (wgslCodeRaw.empty()) {
+        LOG_ERROR("Renderer") << "Failed to read fxaa.wgsl";
+        return;
+    }
+    std::vector<uint8_t> wgslCode(wgslCodeRaw.begin(), wgslCodeRaw.end());
+
+    rhi::ShaderSource vertSource(rhi::ShaderLanguage::WGSL, wgslCode, rhi::ShaderStage::Vertex, "vs_main");
+    fxaaVertexShader = rhiDevice->createShader(rhi::ShaderDesc(vertSource, "FXAAVertexShader"));
+
+    rhi::ShaderSource fragSource(rhi::ShaderLanguage::WGSL, wgslCode, rhi::ShaderStage::Fragment, "fs_main");
+    fxaaFragmentShader = rhiDevice->createShader(rhi::ShaderDesc(fragSource, "FXAAFragmentShader"));
+
+    if (!fxaaVertexShader || !fxaaFragmentShader) {
+        LOG_ERROR("Renderer") << "Failed to create FXAA shaders";
+        return;
+    }
+
+    // Bind group layout: binding 0 = LDR texture, binding 1 = sampler
+    rhi::BindGroupLayoutDesc layoutDesc;
+
+    rhi::BindGroupLayoutEntry texEntry;
+    texEntry.binding = 0;
+    texEntry.visibility = rhi::ShaderStage::Fragment;
+    texEntry.type = rhi::BindingType::SampledTexture;
+    layoutDesc.entries.push_back(texEntry);
+
+    rhi::BindGroupLayoutEntry samplerEntry;
+    samplerEntry.binding = 1;
+    samplerEntry.visibility = rhi::ShaderStage::Fragment;
+    samplerEntry.type = rhi::BindingType::Sampler;
+    layoutDesc.entries.push_back(samplerEntry);
+
+    layoutDesc.label = "FXAA Bind Group Layout";
+    fxaaBindGroupLayout = rhiDevice->createBindGroupLayout(layoutDesc);
+
+    if (!fxaaBindGroupLayout) {
+        LOG_ERROR("Renderer") << "Failed to create FXAA bind group layout";
+        return;
+    }
+
+    // Bind group: LDR texture + sampler (reuse hdrSampler — same linear+clamp settings)
+    rhi::BindGroupDesc bindGroupDesc;
+    bindGroupDesc.layout = fxaaBindGroupLayout.get();
+    bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, ldrColorView.get()));
+    bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+    bindGroupDesc.label = "FXAA Bind Group";
+    fxaaBindGroup = rhiDevice->createBindGroup(bindGroupDesc);
+
+    // Pipeline layout
+    rhi::PipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.bindGroupLayouts.push_back(fxaaBindGroupLayout.get());
+    fxaaPipelineLayout = rhiBridge->createPipelineLayout(pipelineLayoutDesc);
+
+    if (!fxaaPipelineLayout) {
+        LOG_ERROR("Renderer") << "Failed to create FXAA pipeline layout";
+        return;
+    }
+
+    // Pipeline — fullscreen triangle, no depth test, writes to swapchain
+    rhi::RenderPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = fxaaVertexShader.get();
+    pipelineDesc.fragmentShader = fxaaFragmentShader.get();
+    pipelineDesc.layout = fxaaPipelineLayout.get();
+
+    pipelineDesc.primitive.topology = rhi::PrimitiveTopology::TriangleList;
+    pipelineDesc.primitive.cullMode = rhi::CullMode::None;
+    pipelineDesc.primitive.frontFace = rhi::FrontFace::Clockwise;
+
+    // Color target: swapchain format (final output)
+    rhi::ColorTargetState colorTarget;
+    auto* swapchain = rhiBridge->getSwapchain();
+    colorTarget.format = swapchain ? swapchain->getFormat() : rhi::TextureFormat::BGRA8Unorm;
+    colorTarget.blend.blendEnabled = false;
+    pipelineDesc.colorTargets.push_back(colorTarget);
+
+    pipelineDesc.label = "FXAA Pipeline";
+
+    fxaaPipeline = rhiBridge->createRenderPipeline(pipelineDesc);
+
+    if (fxaaPipeline) {
+        LOG_INFO("Renderer") << "FXAA pipeline created successfully";
+    } else {
+        LOG_ERROR("Renderer") << "Failed to create FXAA pipeline";
+    }
+}
+#endif  // __EMSCRIPTEN__
+
 bool Renderer::loadEnvironmentMap(const std::string& hdrPath) {
     if (!resourceManager || !iblManager) {
         LOG_ERROR("Renderer") << "Cannot load environment map: missing managers";
@@ -957,7 +1054,7 @@ bool Renderer::loadEnvironmentMap(const std::string& hdrPath) {
 }
 
 // ============================================================================
-// Phase 2.2: GPU Frustum Culling Pipeline
+// GPU Frustum Culling Pipeline
 // ============================================================================
 
 void Renderer::createCullingPipeline() {
@@ -1057,7 +1154,7 @@ void Renderer::createCullingPipeline() {
         cullUniformBuffers[i] = device->createBuffer(uboDesc);
 
         // Indirect draw buffer: 20 bytes (DrawIndexedIndirectCommand)
-        // Phase 3.2: Enable concurrent sharing for async compute
+        // Enable concurrent sharing when async compute is available (dedicated compute queue + timeline semaphores)
         const auto& features = device->getCapabilities().getFeatures();
         bool needsConcurrent = features.dedicatedComputeQueue && features.timelineSemaphores;
 
@@ -1180,37 +1277,23 @@ void Renderer::performFrustumCulling(rhi::RHICommandEncoder* encoder, uint32_t f
 
         std::vector<vk::BufferMemoryBarrier> barriers;
         if (vulkanCullUbo) {
-            barriers.push_back(vk::BufferMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eHostWrite,
-                .dstAccessMask = vk::AccessFlagBits::eUniformRead,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = vulkanCullUbo->getVkBuffer(),
-                .offset = 0,
-                .size = VK_WHOLE_SIZE
-            });
+            barriers.push_back(vk::BufferMemoryBarrier(
+                vk::AccessFlagBits::eHostWrite, vk::AccessFlagBits::eUniformRead,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                vulkanCullUbo->getVkBuffer(), 0, VK_WHOLE_SIZE));
         }
         if (vulkanIndirect) {
-            barriers.push_back(vk::BufferMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eHostWrite,
-                .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = vulkanIndirect->getVkBuffer(),
-                .offset = 0,
-                .size = VK_WHOLE_SIZE
-            });
+            barriers.push_back(vk::BufferMemoryBarrier(
+                vk::AccessFlagBits::eHostWrite,
+                vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                vulkanIndirect->getVkBuffer(), 0, VK_WHOLE_SIZE));
         }
         if (vulkanObjectBuf) {
-            barriers.push_back(vk::BufferMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eHostWrite,
-                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = vulkanObjectBuf->getVkBuffer(),
-                .offset = 0,
-                .size = VK_WHOLE_SIZE
-            });
+            barriers.push_back(vk::BufferMemoryBarrier(
+                vk::AccessFlagBits::eHostWrite, vk::AccessFlagBits::eShaderRead,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                vulkanObjectBuf->getVkBuffer(), 0, VK_WHOLE_SIZE));
         }
 
         if (!barriers.empty()) {
@@ -1251,26 +1334,16 @@ void Renderer::performFrustumCulling(rhi::RHICommandEncoder* encoder, uint32_t f
 
         std::vector<vk::BufferMemoryBarrier> postBarriers;
         if (vulkanIndirect) {
-            postBarriers.push_back(vk::BufferMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
-                .dstAccessMask = vk::AccessFlagBits::eIndirectCommandRead,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = vulkanIndirect->getVkBuffer(),
-                .offset = 0,
-                .size = VK_WHOLE_SIZE
-            });
+            postBarriers.push_back(vk::BufferMemoryBarrier(
+                vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eIndirectCommandRead,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                vulkanIndirect->getVkBuffer(), 0, VK_WHOLE_SIZE));
         }
         if (vulkanVisibleIndices) {
-            postBarriers.push_back(vk::BufferMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
-                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = vulkanVisibleIndices->getVkBuffer(),
-                .offset = 0,
-                .size = VK_WHOLE_SIZE
-            });
+            postBarriers.push_back(vk::BufferMemoryBarrier(
+                vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                vulkanVisibleIndices->getVkBuffer(), 0, VK_WHOLE_SIZE));
         }
 
         if (!postBarriers.empty()) {
@@ -1343,34 +1416,23 @@ void Renderer::performFrustumCullingAsync(uint32_t frameIndex, uint32_t objectCo
 
         std::vector<vk::BufferMemoryBarrier> barriers;
         if (vulkanCullUbo) {
-            barriers.push_back(vk::BufferMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eHostWrite,
-                .dstAccessMask = vk::AccessFlagBits::eUniformRead,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = vulkanCullUbo->getVkBuffer(),
-                .offset = 0, .size = VK_WHOLE_SIZE
-            });
+            barriers.push_back(vk::BufferMemoryBarrier(
+                vk::AccessFlagBits::eHostWrite, vk::AccessFlagBits::eUniformRead,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                vulkanCullUbo->getVkBuffer(), 0, VK_WHOLE_SIZE));
         }
         if (vulkanIndirect) {
-            barriers.push_back(vk::BufferMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eHostWrite,
-                .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = vulkanIndirect->getVkBuffer(),
-                .offset = 0, .size = VK_WHOLE_SIZE
-            });
+            barriers.push_back(vk::BufferMemoryBarrier(
+                vk::AccessFlagBits::eHostWrite,
+                vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                vulkanIndirect->getVkBuffer(), 0, VK_WHOLE_SIZE));
         }
         if (vulkanObjectBuf) {
-            barriers.push_back(vk::BufferMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eHostWrite,
-                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = vulkanObjectBuf->getVkBuffer(),
-                .offset = 0, .size = VK_WHOLE_SIZE
-            });
+            barriers.push_back(vk::BufferMemoryBarrier(
+                vk::AccessFlagBits::eHostWrite, vk::AccessFlagBits::eShaderRead,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                vulkanObjectBuf->getVkBuffer(), 0, VK_WHOLE_SIZE));
         }
         if (!barriers.empty()) {
             cmdBuf.pipelineBarrier(
@@ -1406,7 +1468,7 @@ void Renderer::performFrustumCullingAsync(uint32_t frameIndex, uint32_t objectCo
 }
 
 // ============================================================================
-// Phase 8: RHI Uniform Buffer Update
+// Uniform Buffer Update
 // ============================================================================
 
 void Renderer::updateRHIUniformBuffer(uint32_t currentImage) {
@@ -1419,7 +1481,7 @@ void Renderer::updateRHIUniformBuffer(uint32_t currentImage) {
     ubo.view = viewMatrix;
     ubo.proj = projectionMatrix;
 
-    // Phase 3.3: Lighting parameters
+    // Lighting parameters
     ubo.sunDirection = sunDirection;
     ubo.sunIntensity = sunIntensity;
     ubo.sunColor = sunColor;
@@ -1427,7 +1489,7 @@ void Renderer::updateRHIUniformBuffer(uint32_t currentImage) {
     ubo.cameraPos = cameraPosition;
     ubo.exposure = exposure;
 
-    // Phase 3.3: Shadow mapping parameters
+    // Shadow mapping parameters
     if (shadowRenderer && shadowRenderer->isInitialized()) {
         ubo.lightSpaceMatrix = shadowRenderer->getLightSpaceMatrix();
     } else {
@@ -1445,12 +1507,10 @@ void Renderer::updateRHIUniformBuffer(uint32_t currentImage) {
 }
 
 // ============================================================================
-// Phase 7: Primary RHI Render Loop (migrated from drawFrameRHI)
+// Frame Rendering
 // ============================================================================
 
 void Renderer::drawFrame() {
-    // Complete RHI rendering path using RHI abstractions
-    // Phase 7: Replaces legacy Vulkan rendering (now drawFrameLegacy)
 
     if (!rhiBridge || !rhiBridge->isReady()) {
         return;
@@ -1479,10 +1539,10 @@ void Renderer::drawFrame() {
 
     // Step 2: Update shadow light matrix (before uniform buffer update)
     if (shadowRenderer && shadowRenderer->isInitialized()) {
-        // Use fixed scene center at origin - shadows should only depend on sun direction
-        // not on camera position. This prevents shadows from shifting when camera moves.
-        glm::vec3 sceneCenter = glm::vec3(0.0f, 0.0f, 0.0f);
-        float sceneRadius = 200.0f;  // Large enough to cover all buildings in NASDAQ sector
+        // Scene center matches building grid center (4x4 grid at 400,0,400, 90m spacing)
+        // Radius covers half-diagonal of 270x270m grid plus max building height (200m)
+        glm::vec3 sceneCenter = glm::vec3(400.0f, 0.0f, 400.0f);
+        float sceneRadius = 350.0f;
         shadowRenderer->updateLightMatrix(sunDirection, sceneCenter, sceneRadius);
     }
 
@@ -1501,7 +1561,7 @@ void Renderer::drawFrame() {
         auto* objectBuffer = pendingInstancedData->objectBuffer;
 
         if (mesh && mesh->hasData() && objectBuffer) {
-            // Phase 2.1+2.2: Create/update SSBO bind group if buffer changed
+            // Recreate SSBO bind group when the object buffer pointer changes
             if (objectBuffer != cachedObjectBuffers[frameIndex]) {
                 rhi::BindGroupDesc ssboDesc;
                 ssboDesc.layout = ssboBindGroupLayout.get();
@@ -1515,7 +1575,7 @@ void Renderer::drawFrame() {
                 cullBindGroups[frameIndex].reset();
             }
 
-            // Phase 2.2+3.2: Perform GPU frustum culling
+            // GPU frustum culling — async compute if dedicated queue available, otherwise inline
             uint32_t instanceCount = pendingInstancedData->instanceCount;
             uint32_t meshIndexCount = static_cast<uint32_t>(mesh->getIndexCount());
             if (useAsyncCompute) {
@@ -1539,22 +1599,15 @@ void Renderer::drawFrame() {
                         {},
                         {},
                         {},
-                        vk::ImageMemoryBarrier{
-                            .srcAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eDepthStencilAttachmentRead,
-                            .dstAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-                            .oldLayout = vk::ImageLayout::eUndefined,
-                            .newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .image = shadowTexture->getVkImage(),
-                            .subresourceRange = vk::ImageSubresourceRange{
-                                .aspectMask = vk::ImageAspectFlagBits::eDepth,
-                                .baseMipLevel = 0,
-                                .levelCount = 1,
-                                .baseArrayLayer = 0,
-                                .layerCount = 1
-                            }
-                        }
+                        vk::ImageMemoryBarrier(
+                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eDepthStencilAttachmentRead,
+                            vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                            vk::ImageLayout::eUndefined,
+                            vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                            shadowTexture->getVkImage(),
+                            vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1)
+                        )
                     );
                 }
 #endif  // !__EMSCRIPTEN__
@@ -1586,22 +1639,15 @@ void Renderer::drawFrame() {
                             {},
                             {},
                             {},
-                            vk::ImageMemoryBarrier{
-                                .srcAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-                                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
-                                .oldLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-                                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .image = shadowTexturePost->getVkImage(),
-                                .subresourceRange = vk::ImageSubresourceRange{
-                                    .aspectMask = vk::ImageAspectFlagBits::eDepth,
-                                    .baseMipLevel = 0,
-                                    .levelCount = 1,
-                                    .baseArrayLayer = 0,
-                                    .layerCount = 1
-                                }
-                            }
+                            vk::ImageMemoryBarrier(
+                                vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                                vk::AccessFlagBits::eShaderRead,
+                                vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                                vk::ImageLayout::eShaderReadOnlyOptimal,
+                                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                                shadowTexturePost->getVkImage(),
+                                vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1)
+                            )
                         );
                     }
 #endif
@@ -1617,9 +1663,9 @@ void Renderer::drawFrame() {
     }
 
 #ifndef __EMSCRIPTEN__
-    // Phase 9: Transition swapchain image from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL
-    // before starting the render pass (only needed for dynamic rendering on macOS/Windows)
-    // Linux uses traditional render pass which handles layout transitions automatically
+    // Transition swapchain image to COLOR_ATTACHMENT_OPTIMAL before the render pass.
+    // Required for dynamic rendering (macOS/Windows); Linux uses a traditional render pass
+    // which handles the transition implicitly via the renderpass load op.
     if (swapchain) {
         // Use Vulkan-specific method to get current image for layout transition
         auto* vulkanSwapchain = dynamic_cast<RHI::Vulkan::VulkanRHISwapchain*>(swapchain);
@@ -1633,22 +1679,13 @@ void Renderer::drawFrame() {
                 {},
                 {},
                 {},
-                vk::ImageMemoryBarrier{
-                    .srcAccessMask = {},
-                    .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-                    .oldLayout = vk::ImageLayout::eUndefined,
-                    .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = swapchainImage,
-                    .subresourceRange = vk::ImageSubresourceRange{
-                        .aspectMask = vk::ImageAspectFlagBits::eColor,
-                        .baseMipLevel = 0,
-                        .levelCount = 1,
-                        .baseArrayLayer = 0,
-                        .layerCount = 1
-                    }
-                }
+                vk::ImageMemoryBarrier(
+                    vk::AccessFlags{}, vk::AccessFlagBits::eColorAttachmentWrite,
+                    vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal,
+                    VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                    swapchainImage,
+                    vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)
+                )
             );
         }
     }
@@ -1660,9 +1697,15 @@ void Renderer::drawFrame() {
     renderPassDesc.height = rhiBridge->getSwapchain()->getHeight();
     renderPassDesc.label = "RHI Main Render Pass";
 
-    // Color attachment
+    // Color attachment:
+    //   WebGPU: geometry renders to HDR offscreen texture → tonemap → LDR intermediate → FXAA → swapchain
+    //   Vulkan: geometry renders directly to swapchain
     rhi::RenderPassColorAttachment colorAttachment;
+#ifdef __EMSCRIPTEN__
+    colorAttachment.view = (hdrColorView && tonemapPipeline) ? hdrColorView.get() : swapchainView;
+#else
     colorAttachment.view = swapchainView;
+#endif
     colorAttachment.loadOp = rhi::LoadOp::Clear;
     colorAttachment.storeOp = rhi::StoreOp::Store;
     colorAttachment.clearValue = rhi::ClearColorValue(0.01f, 0.01f, 0.03f, 1.0f);  // Dark blue background
@@ -1678,7 +1721,8 @@ void Renderer::drawFrame() {
         renderPassDesc.depthStencilAttachment = &depthAttachment;
     }
 
-    // Phase 8: Linux requires traditional render pass (no dynamic rendering)
+    // Linux: inject the native VkRenderPass/VkFramebuffer into the descriptor because
+    // dynamic rendering (VK_KHR_dynamic_rendering) is not available on all Linux drivers.
 #ifdef __linux__
     auto* rhiVulkanSwapchain = dynamic_cast<RHI::Vulkan::VulkanRHISwapchain*>(rhiBridge->getSwapchain());
     if (rhiVulkanSwapchain) {
@@ -1699,7 +1743,7 @@ void Renderer::drawFrame() {
             0.0f, 1.0f);
         renderPass->setScissorRect(0, 0, renderPassDesc.width, renderPassDesc.height);
 
-        // Phase 3.3: Render skybox first (background)
+        // Skybox first (background — rendered before all opaque geometry)
         if (skyboxRenderer) {
             // Calculate inverse view-projection matrix for ray direction
             glm::mat4 viewProj = projectionMatrix * viewMatrix;
@@ -1715,24 +1759,7 @@ void Renderer::drawFrame() {
             skyboxRenderer->render(renderPass.get(), frameIndex, invViewProj, time);
         }
 
-        // Bind pipeline (if created)
-        if (rhiPipeline) {
-            renderPass->setPipeline(rhiPipeline.get());
-
-            // Bind descriptor sets (bind groups)
-            if (frameIndex < rhiBindGroups.size() && rhiBindGroups[frameIndex]) {
-                renderPass->setBindGroup(0, rhiBindGroups[frameIndex].get());
-            }
-
-            // Phase 4.5: Bind vertex/index buffers and draw
-            if (rhiVertexBuffer && rhiIndexBuffer && rhiIndexCount > 0) {
-                renderPass->setVertexBuffer(0, rhiVertexBuffer.get(), 0);
-                renderPass->setIndexBuffer(rhiIndexBuffer.get(), rhi::IndexFormat::Uint32, 0);
-                renderPass->drawIndexed(rhiIndexCount, 1, 0, 0, 0);
-            }
-        }
-
-        // Phase 2.1: Render instanced data using SSBO-based pipeline
+        // Render instanced buildings using SSBO-based pipeline
         if (pendingInstancedData && pendingInstancedData->instanceCount > 0 && buildingPipeline) {
             auto* mesh = pendingInstancedData->mesh;
             auto* objectBuffer = pendingInstancedData->objectBuffer;
@@ -1755,7 +1782,7 @@ void Renderer::drawFrame() {
                 renderPass->setVertexBuffer(0, mesh->getVertexBuffer(), 0);
                 renderPass->setIndexBuffer(mesh->getIndexBuffer(), rhi::IndexFormat::Uint32, 0);
 
-                // Phase 2.2: Draw via indirect buffer (GPU frustum culling sets instanceCount)
+                // Draw count is written by the GPU frustum culling compute shader
                 renderPass->drawIndexedIndirect(indirectDrawBuffers[frameIndex].get(), 0);
             }
 
@@ -1763,7 +1790,7 @@ void Renderer::drawFrame() {
             pendingInstancedData.reset();
         }
 
-        // Phase 3.1: Render particles (after opaque geometry, before ImGui)
+        // Particles — rendered after opaque geometry, before UI
         if (particleRenderer && pendingParticleSystem) {
             // Update particle renderer camera
             particleRenderer->updateCamera(viewMatrix, projectionMatrix);
@@ -1775,7 +1802,7 @@ void Renderer::drawFrame() {
             pendingParticleSystem = nullptr;
         }
 
-        // Phase 7: Render ImGui UI (if initialized)
+        // ImGui UI overlay
 #ifndef __EMSCRIPTEN__
         if (imguiManager) {
             uint32_t imageIndex = rhiBridge->getCurrentImageIndex();
@@ -1786,11 +1813,68 @@ void Renderer::drawFrame() {
         renderPass->end();
     }
 
+#ifdef __EMSCRIPTEN__
+    // Tonemap pass (WebGPU): HDR → LDR intermediate (RGBA8Unorm), ACES + gamma
+    if (tonemapPipeline && tonemapBindGroup && hdrColorView && ldrColorView) {
+        rhi::RenderPassDesc tonemapPassDesc;
+        tonemapPassDesc.width = rhiBridge->getSwapchain()->getWidth();
+        tonemapPassDesc.height = rhiBridge->getSwapchain()->getHeight();
+        tonemapPassDesc.label = "Tonemap Pass";
+
+        rhi::RenderPassColorAttachment tonemapColorAttachment;
+        tonemapColorAttachment.view = ldrColorView.get();
+        tonemapColorAttachment.loadOp = rhi::LoadOp::Clear;
+        tonemapColorAttachment.storeOp = rhi::StoreOp::Store;
+        tonemapColorAttachment.clearValue = rhi::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+        tonemapPassDesc.colorAttachments.push_back(tonemapColorAttachment);
+
+        auto tonemapPass = encoder->beginRenderPass(tonemapPassDesc);
+        if (tonemapPass) {
+            tonemapPass->setViewport(0.0f, 0.0f,
+                static_cast<float>(tonemapPassDesc.width),
+                static_cast<float>(tonemapPassDesc.height),
+                0.0f, 1.0f);
+            tonemapPass->setScissorRect(0, 0, tonemapPassDesc.width, tonemapPassDesc.height);
+            tonemapPass->setPipeline(tonemapPipeline.get());
+            tonemapPass->setBindGroup(0, tonemapBindGroup.get());
+            tonemapPass->draw(3);  // Fullscreen triangle (vertex index → position)
+            tonemapPass->end();
+        }
+    }
+
+    // FXAA pass (WebGPU): LDR intermediate → swapchain, anti-aliasing
+    if (fxaaPipeline && fxaaBindGroup && ldrColorView && swapchainView) {
+        rhi::RenderPassDesc fxaaPassDesc;
+        fxaaPassDesc.width = rhiBridge->getSwapchain()->getWidth();
+        fxaaPassDesc.height = rhiBridge->getSwapchain()->getHeight();
+        fxaaPassDesc.label = "FXAA Pass";
+
+        rhi::RenderPassColorAttachment fxaaColorAttachment;
+        fxaaColorAttachment.view = swapchainView;
+        fxaaColorAttachment.loadOp = rhi::LoadOp::Clear;
+        fxaaColorAttachment.storeOp = rhi::StoreOp::Store;
+        fxaaColorAttachment.clearValue = rhi::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+        fxaaPassDesc.colorAttachments.push_back(fxaaColorAttachment);
+
+        auto fxaaPass = encoder->beginRenderPass(fxaaPassDesc);
+        if (fxaaPass) {
+            fxaaPass->setViewport(0.0f, 0.0f,
+                static_cast<float>(fxaaPassDesc.width),
+                static_cast<float>(fxaaPassDesc.height),
+                0.0f, 1.0f);
+            fxaaPass->setScissorRect(0, 0, fxaaPassDesc.width, fxaaPassDesc.height);
+            fxaaPass->setPipeline(fxaaPipeline.get());
+            fxaaPass->setBindGroup(0, fxaaBindGroup.get());
+            fxaaPass->draw(3);  // Fullscreen triangle
+            fxaaPass->end();
+        }
+    }
+#endif
+
 #ifndef __EMSCRIPTEN__
-    // Phase 9: Transition swapchain image from COLOR_ATTACHMENT_OPTIMAL to PRESENT_SRC
-    // This must be done before finishing the command buffer
-    // Only needed for dynamic rendering on macOS/Windows
-    // Linux uses traditional render pass which handles layout transitions automatically
+    // Transition swapchain image to PRESENT_SRC before finishing the command buffer.
+    // Required for dynamic rendering (macOS/Windows); Linux's traditional render pass
+    // handles this implicitly via the renderpass store op.
     if (swapchain) {
         // Use Vulkan-specific method to get current image for layout transition
         auto* vulkanSwapchain = dynamic_cast<RHI::Vulkan::VulkanRHISwapchain*>(swapchain);
@@ -1804,22 +1888,13 @@ void Renderer::drawFrame() {
                 {},
                 {},
                 {},
-                vk::ImageMemoryBarrier{
-                    .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-                    .dstAccessMask = {},
-                    .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
-                    .newLayout = vk::ImageLayout::ePresentSrcKHR,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = swapchainImage,
-                    .subresourceRange = vk::ImageSubresourceRange{
-                        .aspectMask = vk::ImageAspectFlagBits::eColor,
-                        .baseMipLevel = 0,
-                        .levelCount = 1,
-                        .baseArrayLayer = 0,
-                        .layerCount = 1
-                    }
-                }
+                vk::ImageMemoryBarrier(
+                    vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlags{},
+                    vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::ePresentSrcKHR,
+                    VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                    swapchainImage,
+                    vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)
+                )
             );
         }
     }

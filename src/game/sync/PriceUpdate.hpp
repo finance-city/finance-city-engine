@@ -13,7 +13,8 @@
 struct PriceUpdate {
     std::string ticker;              // Ticker symbol (e.g., "AAPL")
     float price;                     // New price
-    float volume;                    // Trading volume (optional)
+    float rate;                      // Rate of change (percent, e.g. -0.69)
+    float volume;                    // Trading volume tick (vt)
     uint64_t timestamp;              // Update timestamp (milliseconds since epoch)
 
     /**
@@ -22,6 +23,7 @@ struct PriceUpdate {
     PriceUpdate()
         : ticker("")
         , price(0.0f)
+        , rate(0.0f)
         , volume(0.0f)
         , timestamp(0)
     {}
@@ -32,6 +34,7 @@ struct PriceUpdate {
     PriceUpdate(const std::string& ticker_, float price_, uint64_t timestamp_ = 0)
         : ticker(ticker_)
         , price(price_)
+        , rate(0.0f)
         , volume(0.0f)
         , timestamp(timestamp_)
     {}
