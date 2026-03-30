@@ -40,6 +40,7 @@ public:
 private:
     // Shared JSON parsing (used by both native and WASM callbacks)
     void parseAndEnqueue(const std::string& raw);
+    bool firstMsg_ = true;  // tracks whether the first message has been logged
 
 #ifndef __EMSCRIPTEN__
     // ---- Native (IXWebSocket) ----

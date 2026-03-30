@@ -381,6 +381,17 @@ enum class PresentMode {
 };
 
 /**
+ * @brief 2D extent structure
+ */
+struct Extent2D {
+    uint32_t width = 1;
+    uint32_t height = 1;
+
+    Extent2D() = default;
+    Extent2D(uint32_t w, uint32_t h) : width(w), height(h) {}
+};
+
+/**
  * @brief 3D extent structure
  */
 struct Extent3D {
@@ -434,7 +445,7 @@ struct Viewport {
  */
 struct ScissorRect {
     Offset2D offset;
-    Extent3D extent;
+    Extent2D extent;
 };
 
 /**

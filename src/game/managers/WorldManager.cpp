@@ -24,13 +24,6 @@ void WorldManager::initialize() {
               << sectors.size() << " sectors created";
 }
 
-void WorldManager::initializeFromConfig(const std::string& configPath) {
-    // TODO: Load configuration from JSON file
-    // For now, just use default initialization
-    initialize();
-    LOG_WARN("WorldManager") << "Config loading not yet implemented, using defaults";
-}
-
 void WorldManager::createSector(const Sector& sector) {
     // Check if sector already exists
     if (sectorIdToIndex.find(sector.id) != sectorIdToIndex.end()) {

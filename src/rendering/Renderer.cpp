@@ -15,9 +15,7 @@
 
 #include <stdexcept>
 
-Renderer::Renderer(GLFWwindow* window,
-                   const std::vector<const char*>& validationLayers,
-                   bool enableValidation)
+Renderer::Renderer(GLFWwindow* window, bool enableValidation)
     : window(window),
       startTime(std::chrono::high_resolution_clock::now()),
       viewMatrix(glm::mat4(1.0f)),
@@ -77,7 +75,8 @@ Renderer::Renderer(GLFWwindow* window,
     createShadowRenderer();
 
 #ifdef __EMSCRIPTEN__
-    // Post-process pipelines must be created after HDR render target (bind groups reference texture views)
+    // Post-process pipelines (order matters: bloom must precede tonemap since tonemap binds bloomViewA)
+    createBloomPipeline();
     createTonemapPipeline();
     createFXAAPipeline();
 #endif
@@ -112,22 +111,7 @@ void Renderer::handleFramebufferResize(int width, int height) {
 
 #ifdef __EMSCRIPTEN__
     createHDRRenderTarget();
-    if (tonemapBindGroupLayout && hdrColorView && hdrSampler) {
-        rhi::BindGroupDesc bindGroupDesc;
-        bindGroupDesc.layout = tonemapBindGroupLayout.get();
-        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, hdrColorView.get()));
-        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
-        bindGroupDesc.label = "Tonemap Bind Group";
-        tonemapBindGroup = rhiBridge->getDevice()->createBindGroup(bindGroupDesc);
-    }
-    if (fxaaBindGroupLayout && ldrColorView && hdrSampler) {
-        rhi::BindGroupDesc bindGroupDesc;
-        bindGroupDesc.layout = fxaaBindGroupLayout.get();
-        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, ldrColorView.get()));
-        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
-        bindGroupDesc.label = "FXAA Bind Group";
-        fxaaBindGroup = rhiBridge->getDevice()->createBindGroup(bindGroupDesc);
-    }
+    recreatePostProcessBindGroups();
 #endif
 }
 
@@ -181,22 +165,7 @@ void Renderer::recreateSwapchain() {
 #ifdef __EMSCRIPTEN__
     // Recreate HDR + LDR textures (size changed) and update post-process bind groups
     createHDRRenderTarget();
-    if (tonemapBindGroupLayout && hdrColorView && hdrSampler) {
-        rhi::BindGroupDesc bindGroupDesc;
-        bindGroupDesc.layout = tonemapBindGroupLayout.get();
-        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, hdrColorView.get()));
-        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
-        bindGroupDesc.label = "Tonemap Bind Group";
-        tonemapBindGroup = rhiBridge->getDevice()->createBindGroup(bindGroupDesc);
-    }
-    if (fxaaBindGroupLayout && ldrColorView && hdrSampler) {
-        rhi::BindGroupDesc bindGroupDesc;
-        bindGroupDesc.layout = fxaaBindGroupLayout.get();
-        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, ldrColorView.get()));
-        bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
-        bindGroupDesc.label = "FXAA Bind Group";
-        fxaaBindGroup = rhiBridge->getDevice()->createBindGroup(bindGroupDesc);
-    }
+    recreatePostProcessBindGroups();
 #endif
 
     // Notify ImGui of resize
@@ -725,6 +694,45 @@ void Renderer::createIBL() {
 // HDR Render Target Creation (WebGPU only)
 // ============================================================================
 
+#ifdef __EMSCRIPTEN__
+void Renderer::recreatePostProcessBindGroups() {
+    auto* dev = rhiBridge->getDevice();
+
+    // Bloom bind groups (texture views changed after resize)
+    if (bloomBindGroupLayout && hdrSampler) {
+        auto makeBloom = [&](rhi::RHITextureView* view, const char* label) {
+            rhi::BindGroupDesc desc;
+            desc.layout = bloomBindGroupLayout.get();
+            desc.entries.push_back(rhi::BindGroupEntry::TextureView(0, view));
+            desc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+            desc.label  = label;
+            return dev->createBindGroup(desc);
+        };
+        if (hdrColorView) bloomPrefilterBindGroup = makeBloom(hdrColorView.get(), "Bloom Prefilter Bind Group");
+        if (bloomViewA)   bloomBlurHBindGroup     = makeBloom(bloomViewA.get(),   "Bloom Blur H Bind Group");
+        if (bloomViewB)   bloomBlurVBindGroup     = makeBloom(bloomViewB.get(),   "Bloom Blur V Bind Group");
+    }
+
+    if (tonemapBindGroupLayout && hdrColorView && hdrSampler && bloomViewA) {
+        rhi::BindGroupDesc desc;
+        desc.layout = tonemapBindGroupLayout.get();
+        desc.entries.push_back(rhi::BindGroupEntry::TextureView(0, hdrColorView.get()));
+        desc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+        desc.entries.push_back(rhi::BindGroupEntry::TextureView(2, bloomViewA.get()));
+        desc.label = "Tonemap Bind Group";
+        tonemapBindGroup = dev->createBindGroup(desc);
+    }
+    if (fxaaBindGroupLayout && ldrColorView && hdrSampler) {
+        rhi::BindGroupDesc desc;
+        desc.layout = fxaaBindGroupLayout.get();
+        desc.entries.push_back(rhi::BindGroupEntry::TextureView(0, ldrColorView.get()));
+        desc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+        desc.label = "FXAA Bind Group";
+        fxaaBindGroup = dev->createBindGroup(desc);
+    }
+}
+#endif
+
 void Renderer::createHDRRenderTarget() {
     if (!rhiBridge || !rhiBridge->isReady()) {
         return;
@@ -783,6 +791,171 @@ void Renderer::createHDRRenderTarget() {
     } else {
         LOG_ERROR("Renderer") << "Failed to create LDR intermediate texture";
     }
+
+    // Create half-res bloom textures (RGBA16Float)
+    // bloomA: prefilter output + vertical-blur result (read by tonemap)
+    // bloomB: horizontal-blur intermediate
+    uint32_t bloomW = std::max(1u, width  / 2);
+    uint32_t bloomH = std::max(1u, height / 2);
+
+    rhi::TextureDesc bloomDesc;
+    bloomDesc.format = rhi::TextureFormat::RGBA16Float;
+    bloomDesc.usage  = rhi::TextureUsage::RenderTarget | rhi::TextureUsage::Sampled;
+
+    bloomDesc.size  = rhi::Extent3D(bloomW, bloomH, 1);
+    bloomDesc.label = "Bloom Texture A";
+    bloomTextureA   = rhiDevice->createTexture(bloomDesc);
+    if (bloomTextureA) {
+        rhi::TextureViewDesc vd;
+        vd.format    = rhi::TextureFormat::RGBA16Float;
+        vd.dimension = rhi::TextureViewDimension::View2D;
+        bloomViewA   = bloomTextureA->createView(vd);
+    }
+
+    bloomDesc.label = "Bloom Texture B";
+    bloomTextureB   = rhiDevice->createTexture(bloomDesc);
+    if (bloomTextureB) {
+        rhi::TextureViewDesc vd;
+        vd.format    = rhi::TextureFormat::RGBA16Float;
+        vd.dimension = rhi::TextureViewDimension::View2D;
+        bloomViewB   = bloomTextureB->createView(vd);
+    }
+}
+
+// ============================================================================
+// Bloom Pipeline Creation (WebGPU only)
+// ============================================================================
+
+void Renderer::createBloomPipeline() {
+    if (!rhiBridge || !rhiBridge->isReady() || !hdrColorView || !bloomViewA || !bloomViewB || !hdrSampler) {
+        return;
+    }
+
+    auto* rhiDevice = rhiBridge->getDevice();
+
+    // ---- Shared bind group layout (SampledTexture@0 + Sampler@1) ----
+    rhi::BindGroupLayoutDesc layoutDesc;
+    {
+        rhi::BindGroupLayoutEntry t;
+        t.binding    = 0;
+        t.visibility = rhi::ShaderStage::Fragment;
+        t.type       = rhi::BindingType::SampledTexture;
+        layoutDesc.entries.push_back(t);
+    }
+    {
+        rhi::BindGroupLayoutEntry s;
+        s.binding    = 1;
+        s.visibility = rhi::ShaderStage::Fragment;
+        s.type       = rhi::BindingType::Sampler;
+        layoutDesc.entries.push_back(s);
+    }
+    layoutDesc.label    = "Bloom Bind Group Layout";
+    bloomBindGroupLayout = rhiDevice->createBindGroupLayout(layoutDesc);
+    if (!bloomBindGroupLayout) {
+        LOG_ERROR("Renderer") << "Failed to create bloom bind group layout";
+        return;
+    }
+
+    // ---- Shared pipeline layout ----
+    rhi::PipelineLayoutDesc plDesc;
+    plDesc.bindGroupLayouts.push_back(bloomBindGroupLayout.get());
+    bloomPipelineLayout = rhiBridge->createPipelineLayout(plDesc);
+    if (!bloomPipelineLayout) {
+        LOG_ERROR("Renderer") << "Failed to create bloom pipeline layout";
+        return;
+    }
+
+    // ---- Helper: build a bind group (texture view + sampler) ----
+    auto makeBindGroup = [&](rhi::RHITextureView* view, const char* label) {
+        rhi::BindGroupDesc desc;
+        desc.layout = bloomBindGroupLayout.get();
+        desc.entries.push_back(rhi::BindGroupEntry::TextureView(0, view));
+        desc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+        desc.label  = label;
+        return rhiDevice->createBindGroup(desc);
+    };
+
+    // ---- Bloom prefilter pipeline ----
+    {
+        auto raw = FileUtils::readFile("shaders/bloom_prefilter.wgsl");
+        if (raw.empty()) {
+            LOG_ERROR("Renderer") << "Failed to read bloom_prefilter.wgsl"; return;
+        }
+        std::vector<uint8_t> src(raw.begin(), raw.end());
+        bloomPrefilterVS = rhiDevice->createShader(
+            rhi::ShaderDesc(rhi::ShaderSource(rhi::ShaderLanguage::WGSL, src, rhi::ShaderStage::Vertex,   "vs_main"), "BloomPrefilterVS"));
+        bloomPrefilterFS = rhiDevice->createShader(
+            rhi::ShaderDesc(rhi::ShaderSource(rhi::ShaderLanguage::WGSL, src, rhi::ShaderStage::Fragment, "fs_main"), "BloomPrefilterFS"));
+        if (!bloomPrefilterVS || !bloomPrefilterFS) {
+            LOG_ERROR("Renderer") << "Failed to create bloom prefilter shaders"; return;
+        }
+
+        bloomPrefilterBindGroup = makeBindGroup(hdrColorView.get(), "Bloom Prefilter Bind Group");
+
+        rhi::RenderPipelineDesc pd;
+        pd.vertexShader   = bloomPrefilterVS.get();
+        pd.fragmentShader = bloomPrefilterFS.get();
+        pd.layout         = bloomPipelineLayout.get();
+        pd.primitive.topology  = rhi::PrimitiveTopology::TriangleList;
+        pd.primitive.cullMode  = rhi::CullMode::None;
+        pd.primitive.frontFace = rhi::FrontFace::Clockwise;
+        rhi::ColorTargetState ct;
+        ct.format              = rhi::TextureFormat::RGBA16Float;
+        ct.blend.blendEnabled  = false;
+        pd.colorTargets.push_back(ct);
+        pd.label = "Bloom Prefilter Pipeline";
+        bloomPrefilterPipeline = rhiBridge->createRenderPipeline(pd);
+    }
+
+    // ---- Bloom blur pipelines (H and V share the same WGSL, different entry points) ----
+    {
+        auto raw = FileUtils::readFile("shaders/bloom_blur.wgsl");
+        if (raw.empty()) {
+            LOG_ERROR("Renderer") << "Failed to read bloom_blur.wgsl"; return;
+        }
+        std::vector<uint8_t> src(raw.begin(), raw.end());
+
+        // Vertex shader shared between H and V (same fullscreen triangle logic)
+        auto bloomBlurVS = rhiDevice->createShader(
+            rhi::ShaderDesc(rhi::ShaderSource(rhi::ShaderLanguage::WGSL, src, rhi::ShaderStage::Vertex, "vs_main"), "BloomBlurVS"));
+
+        bloomBlurHFS = rhiDevice->createShader(
+            rhi::ShaderDesc(rhi::ShaderSource(rhi::ShaderLanguage::WGSL, src, rhi::ShaderStage::Fragment, "fs_horizontal"), "BloomBlurHFS"));
+        bloomBlurVFS = rhiDevice->createShader(
+            rhi::ShaderDesc(rhi::ShaderSource(rhi::ShaderLanguage::WGSL, src, rhi::ShaderStage::Fragment, "fs_vertical"),   "BloomBlurVFS"));
+
+        if (!bloomBlurVS || !bloomBlurHFS || !bloomBlurVFS) {
+            LOG_ERROR("Renderer") << "Failed to create bloom blur shaders"; return;
+        }
+
+        bloomBlurHBindGroup = makeBindGroup(bloomViewA.get(), "Bloom Blur H Bind Group");  // reads bloomA
+        bloomBlurVBindGroup = makeBindGroup(bloomViewB.get(), "Bloom Blur V Bind Group");  // reads bloomB
+
+        auto makePipeline = [&](rhi::RHIShader* fs, const char* label) {
+            rhi::RenderPipelineDesc pd;
+            pd.vertexShader   = bloomBlurVS.get();
+            pd.fragmentShader = fs;
+            pd.layout         = bloomPipelineLayout.get();
+            pd.primitive.topology  = rhi::PrimitiveTopology::TriangleList;
+            pd.primitive.cullMode  = rhi::CullMode::None;
+            pd.primitive.frontFace = rhi::FrontFace::Clockwise;
+            rhi::ColorTargetState ct;
+            ct.format             = rhi::TextureFormat::RGBA16Float;
+            ct.blend.blendEnabled = false;
+            pd.colorTargets.push_back(ct);
+            pd.label = label;
+            return rhiBridge->createRenderPipeline(pd);
+        };
+
+        bloomBlurHPipeline = makePipeline(bloomBlurHFS.get(), "Bloom Blur H Pipeline");
+        bloomBlurVPipeline = makePipeline(bloomBlurVFS.get(), "Bloom Blur V Pipeline");
+    }
+
+    if (bloomPrefilterPipeline && bloomBlurHPipeline && bloomBlurVPipeline) {
+        LOG_INFO("Renderer") << "Bloom pipelines created successfully";
+    } else {
+        LOG_ERROR("Renderer") << "One or more bloom pipelines failed to create";
+    }
 }
 
 // ============================================================================
@@ -790,7 +963,7 @@ void Renderer::createHDRRenderTarget() {
 // ============================================================================
 
 void Renderer::createTonemapPipeline() {
-    if (!rhiBridge || !rhiBridge->isReady() || !hdrColorView || !hdrSampler) {
+    if (!rhiBridge || !rhiBridge->isReady() || !hdrColorView || !hdrSampler || !bloomViewA) {
         return;
     }
 
@@ -815,7 +988,7 @@ void Renderer::createTonemapPipeline() {
         return;
     }
 
-    // Bind group layout: binding 0 = HDR texture, binding 1 = sampler
+    // Bind group layout: 0=HDR texture, 1=sampler, 2=bloom texture
     rhi::BindGroupLayoutDesc layoutDesc;
 
     rhi::BindGroupLayoutEntry texEntry;
@@ -830,6 +1003,12 @@ void Renderer::createTonemapPipeline() {
     samplerEntry.type = rhi::BindingType::Sampler;
     layoutDesc.entries.push_back(samplerEntry);
 
+    rhi::BindGroupLayoutEntry bloomEntry;
+    bloomEntry.binding = 2;
+    bloomEntry.visibility = rhi::ShaderStage::Fragment;
+    bloomEntry.type = rhi::BindingType::SampledTexture;
+    layoutDesc.entries.push_back(bloomEntry);
+
     layoutDesc.label = "Tonemap Bind Group Layout";
     tonemapBindGroupLayout = rhiDevice->createBindGroupLayout(layoutDesc);
 
@@ -838,11 +1017,12 @@ void Renderer::createTonemapPipeline() {
         return;
     }
 
-    // Bind group: HDR texture view + sampler
+    // Bind group: HDR texture + sampler + bloom texture (half-res, bilinear upsampled)
     rhi::BindGroupDesc bindGroupDesc;
     bindGroupDesc.layout = tonemapBindGroupLayout.get();
     bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(0, hdrColorView.get()));
     bindGroupDesc.entries.push_back(rhi::BindGroupEntry::Sampler(1, hdrSampler.get()));
+    bindGroupDesc.entries.push_back(rhi::BindGroupEntry::TextureView(2, bloomViewA.get()));
     bindGroupDesc.label = "Tonemap Bind Group";
     tonemapBindGroup = rhiDevice->createBindGroup(bindGroupDesc);
 
@@ -1814,7 +1994,42 @@ void Renderer::drawFrame() {
     }
 
 #ifdef __EMSCRIPTEN__
-    // Tonemap pass (WebGPU): HDR → LDR intermediate (RGBA8Unorm), ACES + gamma
+    // ---- Bloom passes (HDR → bloomA → bloomB → bloomA) ----
+    {
+        auto* sc   = rhiBridge->getSwapchain();
+        uint32_t bW = std::max(1u, sc->getWidth()  / 2);
+        uint32_t bH = std::max(1u, sc->getHeight() / 2);
+
+        auto bloomPass = [&](rhi::RHIRenderPipeline* pipeline,
+                             rhi::RHIBindGroup*       bindGroup,
+                             rhi::RHITextureView*     target,
+                             const char*              label) {
+            if (!pipeline || !bindGroup || !target) return;
+            rhi::RenderPassDesc pd;
+            pd.width  = bW; pd.height = bH; pd.label = label;
+            rhi::RenderPassColorAttachment ca;
+            ca.view      = target;
+            ca.loadOp    = rhi::LoadOp::Clear;
+            ca.storeOp   = rhi::StoreOp::Store;
+            ca.clearValue = rhi::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+            pd.colorAttachments.push_back(ca);
+            auto pass = encoder->beginRenderPass(pd);
+            if (pass) {
+                pass->setViewport(0.0f, 0.0f, float(bW), float(bH), 0.0f, 1.0f);
+                pass->setScissorRect(0, 0, bW, bH);
+                pass->setPipeline(pipeline);
+                pass->setBindGroup(0, bindGroup);
+                pass->draw(3);
+                pass->end();
+            }
+        };
+
+        bloomPass(bloomPrefilterPipeline.get(), bloomPrefilterBindGroup.get(), bloomViewA.get(), "Bloom Prefilter");
+        bloomPass(bloomBlurHPipeline.get(),     bloomBlurHBindGroup.get(),     bloomViewB.get(), "Bloom Blur H");
+        bloomPass(bloomBlurVPipeline.get(),     bloomBlurVBindGroup.get(),     bloomViewA.get(), "Bloom Blur V");
+    }
+
+    // Tonemap pass (WebGPU): HDR+bloom → LDR intermediate (RGBA8Unorm), ACES + gamma
     if (tonemapPipeline && tonemapBindGroup && hdrColorView && ldrColorView) {
         rhi::RenderPassDesc tonemapPassDesc;
         tonemapPassDesc.width = rhiBridge->getSwapchain()->getWidth();

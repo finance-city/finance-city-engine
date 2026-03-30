@@ -450,7 +450,9 @@ void BuildingManager::updateObjectBuffer() {
         // Material
         glm::vec4 colorVec4 = building.getColor();
         obj.colorAndMetallic = glm::vec4(colorVec4.r, colorVec4.g, colorVec4.b, 0.3f);  // metallic=0.3
-        obj.roughnessAOPad = glm::vec4(0.4f, 1.0f, 0.0f, 0.0f);  // roughness=0.4, ao=1.0
+        float numFloors = building.currentHeight / 3.5f;  // 3.5m per floor
+        float priceRate = building.priceChangePercent * 0.01f;  // % → ratio
+        obj.roughnessAOPad = glm::vec4(0.4f, 1.0f, numFloors, priceRate);
 
         objectData.push_back(obj);
     }

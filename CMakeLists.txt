@@ -458,6 +458,8 @@ else()
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/fxaa.wgsl
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_prefilter.wgsl
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_blur.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf_lut.comp.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/equirect_to_cubemap.comp.wgsl
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/irradiance_map.comp.wgsl

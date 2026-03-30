@@ -67,6 +67,9 @@ struct VertexOutput {
     @location(4) metallic: f32,
     @location(5) roughness: f32,
     @location(6) ao: f32,
+    @location(7) texCoord: vec2<f32>,
+    @location(8) numFloors: f32,   // roughnessAOPad.b — number of floors for window grid
+    @location(9) priceRate: f32,   // roughnessAOPad.a — price change ratio for emissive
 }
 
 @vertex
@@ -87,6 +90,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.metallic = obj.colorAndMetallic.a;
     output.roughness = obj.roughnessAOPad.r;
     output.ao = obj.roughnessAOPad.g;
+    output.texCoord = input.texCoord;
+    output.numFloors = obj.roughnessAOPad.b;
+    output.priceRate = obj.roughnessAOPad.a;
 
     return output;
 }
@@ -180,12 +186,40 @@ fn calculateShadow(posLightSpace: vec4<f32>, normal: vec3<f32>, lightDir: vec3<f
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // sRGB to linear conversion for albedo
     let albedo = pow(input.color, vec3<f32>(2.2));
-    let metallic = input.metallic;
-    let roughness = input.roughness;
     let ao = input.ao;
 
     let N = normalize(input.normal);
     let V = normalize(ubo.cameraPos - input.worldPos);
+
+    // -------------------------------------------------------------------------
+    // Height-based ambient occlusion (darkens building bases near ground)
+    // Replaces the flat ao=1.0 from SSBO with a physically-motivated fade:
+    //   y=0 (ground level) → ao * 0.2  (heavily occluded)
+    //   y≥8m              → ao * 1.0  (fully lit)
+    // -------------------------------------------------------------------------
+    let heightAO    = clamp(input.worldPos.y / 8.0, 0.0, 1.0);
+    let effectiveAO = ao * mix(0.2, 1.0, heightAO);
+
+    // -------------------------------------------------------------------------
+    // Procedural window grid (vertical faces only, buildings with numFloors > 0)
+    // -------------------------------------------------------------------------
+    let uv = input.texCoord;
+    let isVerticalFace = abs(N.y) < 0.5;
+    let hasWindows = input.numFloors > 0.5 && isVerticalFace;
+
+    // Per-window-cell UV mask: 4 columns, numFloors rows; 10% border on each side
+    let fyf = fract(uv.y * input.numFloors);
+    let fxf = fract(uv.x * 4.0);
+    let wMaskY = step(0.1, fyf) * step(fyf, 0.85);
+    let wMaskX = step(0.1, fxf) * step(fxf, 0.85);
+    let isWindow = select(0.0, wMaskX * wMaskY, hasWindows);
+
+    // Material: concrete wall vs glass window
+    let metallic  = mix(input.metallic, 0.9,  isWindow);
+    let roughness = mix(0.8,            0.05, isWindow);
+
+    // Emissive: windows glow blue-white proportional to positive price surge
+    let emissive = vec3<f32>(0.2, 0.45, 1.0) * isWindow * max(0.0, input.priceRate * 5.0);
     let L = normalize(ubo.sunDirection);
     let H = normalize(V + L);
 
@@ -230,15 +264,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Fallback: when no HDR environment is loaded, irradiance cubemap is black
     let iblStrength = max(irradiance.r, max(irradiance.g, irradiance.b));
-    let iblAmbient = (kD_ibl * diffuseIBL + specularIBL) * ao;
-    let fallbackAmbient = albedo * ao;
+    let iblAmbient = (kD_ibl * diffuseIBL + specularIBL) * effectiveAO;
+    let fallbackAmbient = albedo * effectiveAO;
     let ambient = mix(fallbackAmbient, iblAmbient, step(0.001, iblStrength)) * ubo.ambientIntensity;
 
     // Shadow
     let shadow = calculateShadow(input.posLightSpace, N, L);
 
-    // Final color
-    var color = ambient + (1.0 - shadow) * Lo;
+    // Final color (emissive added before exposure so it tones with the scene)
+    var color = ambient + (1.0 - shadow) * Lo + emissive;
 
     // Apply exposure — tonemapping and gamma correction happen in the tonemap pass
     let exp = select(ubo.exposure, 1.0, ubo.exposure <= 0.0);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <string>
 #include <cstdint>
 
@@ -54,7 +55,7 @@ struct BuildingEntity {
 
     // ========== World Position ==========
     glm::vec3 position;              // World coordinates (x, y, z)
-    glm::vec4 rotation;              // Rotation (quaternion: w, x, y, z) - default: identity
+    glm::quat rotation;              // Rotation quaternion - default: identity
 
     // ========== Animation State ==========
     bool isAnimating;                // Is currently animating?
@@ -96,7 +97,7 @@ struct BuildingEntity {
         , heightScale(1.0f)
         , baseScale(10.0f, 10.0f, 1.0f)
         , position(0.0f, 0.0f, 0.0f)
-        , rotation(1.0f, 0.0f, 0.0f, 0.0f)  // Identity quaternion (w, x, y, z)
+        , rotation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f))  // Identity quaternion
         , isAnimating(false)
         , animationProgress(0.0f)
         , animationDuration(1.0f)

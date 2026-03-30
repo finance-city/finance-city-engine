@@ -10,9 +10,8 @@ using json = nlohmann::json;
 
 void WebSocketDataFeed::parseAndEnqueue(const std::string& raw) {
     // Log the first message received to help diagnose format mismatches
-    static bool firstMsg = true;
-    if (firstMsg) {
-        firstMsg = false;
+    if (firstMsg_) {
+        firstMsg_ = false;
         std::string preview = raw.size() > 300 ? raw.substr(0, 300) + "..." : raw;
         LOG_INFO("WebSocketDataFeed") << "First message received: " << preview;
     }

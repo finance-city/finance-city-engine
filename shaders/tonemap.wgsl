@@ -1,8 +1,11 @@
 // Tonemap pass: HDR render target → swapchain (ACES filmic + gamma correction)
 // WebGPU/WASM path — fullscreen triangle, no vertex buffer
 
-@group(0) @binding(0) var hdrTexture: texture_2d<f32>;
-@group(0) @binding(1) var hdrSampler: sampler;
+@group(0) @binding(0) var hdrTexture:   texture_2d<f32>;
+@group(0) @binding(1) var hdrSampler:   sampler;
+@group(0) @binding(2) var bloomTexture: texture_2d<f32>;  // half-res bloom result
+
+const BLOOM_STRENGTH: f32 = 0.4;
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -35,10 +38,14 @@ fn ACESFilm(x: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let hdr = textureSample(hdrTexture, hdrSampler, input.uv).rgb;
+    let hdr   = textureSample(hdrTexture,   hdrSampler, input.uv).rgb;
+    let bloom = textureSample(bloomTexture, hdrSampler, input.uv).rgb;
+
+    // Composite bloom into HDR before tonemapping
+    let hdrWithBloom = hdr + bloom * BLOOM_STRENGTH;
 
     // ACES filmic tone mapping
-    let ldr = ACESFilm(hdr);
+    let ldr = ACESFilm(hdrWithBloom);
 
     // Gamma correction (WebGPU swapchain is BGRA8Unorm — no automatic sRGB conversion)
     let gamma = pow(ldr, vec3<f32>(1.0 / 2.2));

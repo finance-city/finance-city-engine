@@ -33,12 +33,9 @@ public:
     /**
      * @brief Construct renderer with window
      * @param window GLFW window for surface creation
-     * @param validationLayers Validation layers to enable
-     * @param enableValidation Whether to enable validation
+     * @param enableValidation Whether to enable validation layers
      */
-    Renderer(GLFWwindow* window,
-             const std::vector<const char*>& validationLayers,
-             bool enableValidation);
+    Renderer(GLFWwindow* window, bool enableValidation);
 
     ~Renderer();
 
@@ -275,6 +272,30 @@ private:
     std::unique_ptr<rhi::RHIBindGroup> fxaaBindGroup;
     std::unique_ptr<rhi::RHIPipelineLayout> fxaaPipelineLayout;
     std::unique_ptr<rhi::RHIRenderPipeline> fxaaPipeline;
+
+    // Bloom Render Targets (half-res RGBA16Float)
+    // bloomA: prefilter output + vertical blur final result (read by tonemap)
+    // bloomB: horizontal blur intermediate
+    std::unique_ptr<rhi::RHITexture>     bloomTextureA;
+    std::unique_ptr<rhi::RHITextureView> bloomViewA;
+    std::unique_ptr<rhi::RHITexture>     bloomTextureB;
+    std::unique_ptr<rhi::RHITextureView> bloomViewB;
+
+    // Bloom Prefilter Pipeline (full-res HDR → half-res bloomA)
+    std::unique_ptr<rhi::RHIShader>          bloomPrefilterVS;
+    std::unique_ptr<rhi::RHIShader>          bloomPrefilterFS;
+    std::unique_ptr<rhi::RHIBindGroupLayout> bloomBindGroupLayout;   // shared by all 3 bloom passes
+    std::unique_ptr<rhi::RHIBindGroup>       bloomPrefilterBindGroup;
+    std::unique_ptr<rhi::RHIPipelineLayout>  bloomPipelineLayout;    // shared by all 3 bloom passes
+    std::unique_ptr<rhi::RHIRenderPipeline>  bloomPrefilterPipeline;
+
+    // Bloom Blur Pipelines (H: bloomA→bloomB, V: bloomB→bloomA)
+    std::unique_ptr<rhi::RHIShader>         bloomBlurHFS;            // entry point: fs_horizontal
+    std::unique_ptr<rhi::RHIShader>         bloomBlurVFS;            // entry point: fs_vertical
+    std::unique_ptr<rhi::RHIBindGroup>      bloomBlurHBindGroup;     // reads bloomViewA
+    std::unique_ptr<rhi::RHIBindGroup>      bloomBlurVBindGroup;     // reads bloomViewB
+    std::unique_ptr<rhi::RHIRenderPipeline> bloomBlurHPipeline;
+    std::unique_ptr<rhi::RHIRenderPipeline> bloomBlurVPipeline;
 #endif
 
     // RHI initialization methods
@@ -289,6 +310,7 @@ private:
     void createCullingPipeline();
 #ifdef __EMSCRIPTEN__
     void createHDRRenderTarget();
+    void createBloomPipeline();
     void createTonemapPipeline();
     void createFXAAPipeline();
 #endif
@@ -301,4 +323,9 @@ private:
 
     // Swapchain recreation
     void recreateSwapchain();
+
+#ifdef __EMSCRIPTEN__
+    // Recreate post-process bind groups after render target resize
+    void recreatePostProcessBindGroups();
+#endif
 };

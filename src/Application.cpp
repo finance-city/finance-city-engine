@@ -157,7 +157,7 @@ void Application::initRenderer() {
     camera = std::make_unique<Camera>(aspectRatio);
 
     // Create renderer
-    renderer = std::make_unique<Renderer>(window, validationLayers, enableValidationLayers);
+    renderer = std::make_unique<Renderer>(window, enableValidationLayers);
 
     // Initialize ImGui
     renderer->initImGui(window);
@@ -255,143 +255,143 @@ void Application::mainLoopFrame() {
     // with no new batch (most frames) should not trigger mock overwrite.
     bool wsProvided = false;
 
-        // Update game world
-        if (worldManager) {
-            // Update price data: WS if connected, mock fallback otherwise
-            if (wsDataFeed && wsDataFeed->isConnected()) {
-                wsProvided = true;  // Connected = suppress mock, even if no batch this frame
-                auto updates = wsDataFeed->drainUpdates();
-                if (!updates.empty()) {
-                    worldManager->updateMarketData(updates);
-                }
+    // Update game world
+    if (worldManager) {
+        // Update price data: WS if connected, mock fallback otherwise
+        if (wsDataFeed && wsDataFeed->isConnected()) {
+            wsProvided = true;  // Connected = suppress mock, even if no batch this frame
+            auto updates = wsDataFeed->drainUpdates();
+            if (!updates.empty()) {
+                worldManager->updateMarketData(updates);
             }
-            if (!wsProvided && mockDataGen) {
-                priceUpdateTimer += deltaTime;
-                if (priceUpdateTimer >= priceUpdateInterval) {
-                    priceUpdateTimer = 0.0f;
-                    worldManager->updateMarketData(mockDataGen->generateUpdates());
-                }
-            }
-
-            // Update animations
-            worldManager->update(deltaTime);
         }
-
-        // Extract rendering data from game logic
-        if (worldManager) {
-            auto* buildingManager = worldManager->getBuildingManager();
-            if (buildingManager) {
-                if (buildingManager->isObjectBufferDirty()) {
-                    buildingManager->updateObjectBuffer();
-                }
-
-                rendering::InstancedRenderData renderData;
-                renderData.mesh = buildingManager->getBuildingMesh();
-                renderData.objectBuffer = buildingManager->getObjectBuffer();
-                renderData.instanceCount = static_cast<uint32_t>(buildingManager->getBuildingCount() + 1);
-                renderer->submitInstancedRenderData(renderData);
+        if (!wsProvided && mockDataGen) {
+            priceUpdateTimer += deltaTime;
+            if (priceUpdateTimer >= priceUpdateInterval) {
+                priceUpdateTimer = 0.0f;
+                worldManager->updateMarketData(mockDataGen->generateUpdates());
             }
         }
 
-        // Update Particle System
-        if (particleSystem) {
-            particleSystem->update(deltaTime);
-            // Submit particle system to renderer
-            renderer->submitParticleSystem(particleSystem.get());
-        }
+        // Update animations
+        worldManager->update(deltaTime);
+    }
 
-        // Render ImGui UI
+    // Extract rendering data from game logic
+    if (worldManager) {
+        auto* buildingManager = worldManager->getBuildingManager();
+        if (buildingManager) {
+            if (buildingManager->isObjectBufferDirty()) {
+                buildingManager->updateObjectBuffer();
+            }
+
+            rendering::InstancedRenderData renderData;
+            renderData.mesh = buildingManager->getBuildingMesh();
+            renderData.objectBuffer = buildingManager->getObjectBuffer();
+            renderData.instanceCount = static_cast<uint32_t>(buildingManager->getBuildingCount() + 1);  // +1 = ground plane (last instance in SSBO)
+            renderer->submitInstancedRenderData(renderData);
+        }
+    }
+
+    // Update Particle System
+    if (particleSystem) {
+        particleSystem->update(deltaTime);
+        // Submit particle system to renderer
+        renderer->submitParticleSystem(particleSystem.get());
+    }
+
+    // Render ImGui UI
 #ifndef __EMSCRIPTEN__
-        if (auto* imgui = renderer->getImGuiManager()) {
-            imgui->newFrame();
+    if (auto* imgui = renderer->getImGuiManager()) {
+        imgui->newFrame();
 
-            uint32_t buildingCount = 0;
-            if (worldManager && worldManager->getBuildingManager()) {
-                buildingCount = static_cast<uint32_t>(worldManager->getBuildingManager()->getBuildingCount());
-            }
-            imgui->renderUI(*camera, buildingCount, particleSystem.get());
-
-            // Handle particle effect requests from UI
-            auto particleRequest = imgui->getAndClearParticleRequest();
-            if (particleRequest.requested && particleSystem) {
-                particleSystem->spawnEffect(
-                    particleRequest.type,
-                    particleRequest.position,
-                    particleRequest.duration
-                );
-            }
-
-            // Render ticker labels above each building
-            if (worldManager && worldManager->getBuildingManager()) {
-                int fbW, fbH;
-                glfwGetFramebufferSize(window, &fbW, &fbH);
-
-                glm::mat4 vp = camera->getProjectionMatrix() * camera->getViewMatrix();
-                ImDrawList* dl = ImGui::GetBackgroundDrawList();
-
-                for (auto* b : worldManager->getBuildingManager()->getAllBuildings()) {
-                    // Project top-center of building to screen
-                    glm::vec3 worldTop = b->position + glm::vec3(0.0f, b->currentHeight + 8.0f, 0.0f);
-                    glm::vec4 clip = vp * glm::vec4(worldTop, 1.0f);
-
-                    if (clip.w <= 0.0f) continue;  // Behind camera
-
-                    glm::vec3 ndc = glm::vec3(clip) / clip.w;
-                    if (ndc.x < -1.1f || ndc.x > 1.1f || ndc.y < -1.1f || ndc.y > 1.1f) continue;
-
-                    float sx = (ndc.x + 1.0f) * 0.5f * (float)fbW;
-                    float sy = (1.0f - ndc.y) * 0.5f * (float)fbH;
-
-                    // Color: green=상승, red=하락, gray=보합
-                    ImU32 color;
-                    float rate = b->priceChangePercent;
-                    if (rate > 0.1f) {
-                        color = IM_COL32(80, 220, 100, 230);   // green
-                    } else if (rate < -0.1f) {
-                        color = IM_COL32(220, 80, 80, 230);    // red
-                    } else {
-                        color = IM_COL32(200, 200, 200, 200);  // gray
-                    }
-
-                    // "NVDA  $186  +0.69%"
-                    char label[48];
-                    std::snprintf(label, sizeof(label), "%s  $%.0f  %+.2f%%",
-                                  b->ticker.c_str(), b->currentPrice, rate);
-
-                    ImVec2 textSize = ImGui::CalcTextSize(label);
-                    // Subtle dark background for readability
-                    dl->AddRectFilled(
-                        ImVec2(sx - textSize.x * 0.5f - 3, sy - 1),
-                        ImVec2(sx + textSize.x * 0.5f + 3, sy + textSize.y + 1),
-                        IM_COL32(0, 0, 0, 110), 2.0f);
-                    dl->AddText(ImVec2(sx - textSize.x * 0.5f, sy), color, label);
-                }
-            }
-
-            // LIVE / MOCK badge — top-right corner
-            {
-                const char* srcText = wsProvided ? "\xe2\x97\x8f LIVE" : "\xe2\x97\x8f MOCK";
-                ImU32 srcBg   = wsProvided ? IM_COL32(30, 160, 60, 210)  : IM_COL32(200, 120, 0, 210);
-                ImVec2 ts     = ImGui::CalcTextSize(srcText);
-                ImGuiIO& io   = ImGui::GetIO();
-                float px = io.DisplaySize.x - ts.x - 20.0f;
-                float py = 10.0f;
-                dl->AddRectFilled(ImVec2(px - 6, py - 3),
-                                  ImVec2(px + ts.x + 6, py + ts.y + 3),
-                                  srcBg, 5.0f);
-                dl->AddText(ImVec2(px, py), IM_COL32(255, 255, 255, 255), srcText);
-            }
-
-            // Apply lighting settings from UI
-            auto& lighting = imgui->getLightingSettings();
-            renderer->setSunDirection(lighting.sunDirection);
-            renderer->setSunIntensity(lighting.sunIntensity);
-            renderer->setSunColor(lighting.sunColor);
-            renderer->setAmbientIntensity(lighting.ambientIntensity);
-            renderer->setShadowBias(lighting.shadowBias);
-            renderer->setShadowStrength(lighting.shadowStrength);
-            renderer->setExposure(lighting.exposure);
+        uint32_t buildingCount = 0;
+        if (worldManager && worldManager->getBuildingManager()) {
+            buildingCount = static_cast<uint32_t>(worldManager->getBuildingManager()->getBuildingCount());
         }
+        imgui->renderUI(*camera, buildingCount, particleSystem.get());
+
+        // Handle particle effect requests from UI
+        auto particleRequest = imgui->getAndClearParticleRequest();
+        if (particleRequest.requested && particleSystem) {
+            particleSystem->spawnEffect(
+                particleRequest.type,
+                particleRequest.position,
+                particleRequest.duration
+            );
+        }
+
+        // Render ticker labels above each building
+        if (worldManager && worldManager->getBuildingManager()) {
+            int fbW, fbH;
+            glfwGetFramebufferSize(window, &fbW, &fbH);
+
+            glm::mat4 vp = camera->getProjectionMatrix() * camera->getViewMatrix();
+            ImDrawList* dl = ImGui::GetBackgroundDrawList();
+
+            for (auto* b : worldManager->getBuildingManager()->getAllBuildings()) {
+                // Project top-center of building to screen
+                glm::vec3 worldTop = b->position + glm::vec3(0.0f, b->currentHeight + 8.0f, 0.0f);
+                glm::vec4 clip = vp * glm::vec4(worldTop, 1.0f);
+
+                if (clip.w <= 0.0f) continue;  // Behind camera
+
+                glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                if (ndc.x < -1.1f || ndc.x > 1.1f || ndc.y < -1.1f || ndc.y > 1.1f) continue;
+
+                float sx = (ndc.x + 1.0f) * 0.5f * (float)fbW;
+                float sy = (1.0f - ndc.y) * 0.5f * (float)fbH;
+
+                // Color: green=상승, red=하락, gray=보합
+                ImU32 color;
+                float rate = b->priceChangePercent;
+                if (rate > 0.1f) {
+                    color = IM_COL32(80, 220, 100, 230);   // green
+                } else if (rate < -0.1f) {
+                    color = IM_COL32(220, 80, 80, 230);    // red
+                } else {
+                    color = IM_COL32(200, 200, 200, 200);  // gray
+                }
+
+                // "NVDA  $186  +0.69%"
+                char label[48];
+                std::snprintf(label, sizeof(label), "%s  $%.0f  %+.2f%%",
+                              b->ticker.c_str(), b->currentPrice, rate);
+
+                ImVec2 textSize = ImGui::CalcTextSize(label);
+                // Subtle dark background for readability
+                dl->AddRectFilled(
+                    ImVec2(sx - textSize.x * 0.5f - 3, sy - 1),
+                    ImVec2(sx + textSize.x * 0.5f + 3, sy + textSize.y + 1),
+                    IM_COL32(0, 0, 0, 110), 2.0f);
+                dl->AddText(ImVec2(sx - textSize.x * 0.5f, sy), color, label);
+            }
+        }
+
+        // LIVE / MOCK badge — top-right corner
+        {
+            const char* srcText = wsProvided ? "\xe2\x97\x8f LIVE" : "\xe2\x97\x8f MOCK";
+            ImU32 srcBg   = wsProvided ? IM_COL32(30, 160, 60, 210)  : IM_COL32(200, 120, 0, 210);
+            ImVec2 ts     = ImGui::CalcTextSize(srcText);
+            ImGuiIO& io   = ImGui::GetIO();
+            float px = io.DisplaySize.x - ts.x - 20.0f;
+            float py = 10.0f;
+            dl->AddRectFilled(ImVec2(px - 6, py - 3),
+                              ImVec2(px + ts.x + 6, py + ts.y + 3),
+                              srcBg, 5.0f);
+            dl->AddText(ImVec2(px, py), IM_COL32(255, 255, 255, 255), srcText);
+        }
+
+        // Apply lighting settings from UI
+        auto& lighting = imgui->getLightingSettings();
+        renderer->setSunDirection(lighting.sunDirection);
+        renderer->setSunIntensity(lighting.sunIntensity);
+        renderer->setSunColor(lighting.sunColor);
+        renderer->setAmbientIntensity(lighting.ambientIntensity);
+        renderer->setShadowBias(lighting.shadowBias);
+        renderer->setShadowStrength(lighting.shadowStrength);
+        renderer->setExposure(lighting.exposure);
+    }
 #endif
 
 #ifdef __EMSCRIPTEN__
@@ -423,7 +423,7 @@ void Application::mainLoopFrame() {
             std::snprintf(label, sizeof(label), "%s  $%.0f  %+.2f%%",
                           b->ticker.c_str(), b->currentPrice, rate);
 
-            js_set_building_label(static_cast<int>(b->entityId), label, sx, sy, cr, cg, cb);
+            js_set_building_label(static_cast<int>(b->entityId & 0x7FFFFFFFu), label, sx, sy, cr, cg, cb);
         }
 
         js_set_data_source_badge(wsProvided ? 0 : 1);

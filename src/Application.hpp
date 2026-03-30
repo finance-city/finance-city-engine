@@ -9,7 +9,6 @@
 
 #include <GLFW/glfw3.h>
 #include <memory>
-#include <vector>
 #include <string>
 #include <chrono>
 
@@ -51,11 +50,6 @@ private:
     static constexpr uint32_t WINDOW_WIDTH = 1600;
     static constexpr uint32_t WINDOW_HEIGHT = 900;
     static constexpr const char* WINDOW_TITLE = "Finance City Engine";
-
-    // Validation layers (enabled in debug builds only)
-    const std::vector<const char*> validationLayers = {
-        "VK_LAYER_KHRONOS_validation"
-    };
 
 #ifdef NDEBUG
     static constexpr bool enableValidationLayers = false;

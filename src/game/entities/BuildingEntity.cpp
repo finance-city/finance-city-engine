@@ -4,17 +4,10 @@
 
 glm::mat4 BuildingEntity::getTransformMatrix() const {
     // Create transform matrix: T * R * S
-    // Translation
     glm::mat4 transform = glm::translate(glm::mat4(1.0f), position);
-
-    // Rotation (rotation is vec4 storing quaternion as w, x, y, z)
-    glm::quat quat(rotation.x, rotation.y, rotation.z, rotation.w);  // w, x, y, z
-    transform *= glm::mat4_cast(quat);
-
-    // Scale (width, height, depth)
+    transform *= glm::mat4_cast(rotation);
     glm::vec3 scale = glm::vec3(baseScale.x, currentHeight, baseScale.z);
     transform = glm::scale(transform, scale);
-
     return transform;
 }
 

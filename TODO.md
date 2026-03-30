@@ -17,15 +17,15 @@
 ✅ 완료   WS-1   WASM WebSocket 지원 (Emscripten WebSocket API)
 ✅ 완료   WS-2   WebSocket 파서 유연화 (다양한 서버 형식 허용)
 ✅ 완료   WS-3   wsProvided 로직 버그 수정 (연결 중 mock 덮어쓰기 방지)
+✅ 완료   P2-3   instanceCount + 1 의도 확인 (주석으로 ground plane 명시)
+✅ 완료   P2-4   validationLayers 파라미터 제거 (Renderer 생성자 bool만 사용)
+✅ 완료   P3-1   ScissorRect.extent → Extent2D (Extent2D 타입 추가)
+✅ 완료   P3-2   BuildingEntity.rotation → glm::quat (타입 안전성 확보)
+✅ 완료   P3-3   initializeFromConfig stub 제거 (미구현 public 함수 삭제)
+✅ 완료   VIS-5  Procedural Building Textures (Phase 1) — 창문 격자 + 이미시브
+✅ 완료   VIS-3  Bloom — 3-pass (prefilter → blur H → blur V), tonemap에 합산
+✅ 완료   VIS-4  SSAO — height-based AO (building.wgsl; 화면공간 SSAO는 VIS-7 이후 고려)
 
-⏳ 대기   P2-3   instanceCount + 1 의도 확인
-⏳ 대기   P2-4   validationLayers 파라미터 정리
-⏳ 대기   P3-1   ScissorRect.extent → Extent2D
-⏳ 대기   P3-2   BuildingEntity.rotation → glm::quat
-⏳ 대기   P3-3   initializeFromConfig stub 처리
-⏳ 대기   VIS-3  Bloom
-⏳ 대기   VIS-4  SSAO
-⏳ 대기   VIS-5  Procedural Building Textures (Phase 1)
 ⏳ 대기   VIS-7  텍스처 & 환경 고도화 전체 (VISUAL_UPGRADE.md 참조)
 ```
 
@@ -103,52 +103,6 @@ LDR 중간 텍스처(RGBA8Unorm)에서 읽어 스왑체인에 씀.
 ---
 
 ## ⏳ 대기 항목
-
-### P2-3. `instanceCount + 1` 의도 확인
-
-- **파일**: `src/Application.cpp`
-- `getBuildingCount() + 1`의 `+1`이 지면 플레인을 포함하는 의도인지 버그인지 확인 후 주석 명시.
-
-### P2-4. `validationLayers` 파라미터 정리
-
-- **파일**: `src/Application.hpp`, `src/rendering/Renderer.hpp`
-- Application → Renderer까지 전달되지만 VulkanRHIDevice가 자체 하드코딩 사용 → 무시됨.
-- `DeviceCreateInfo`에 레이어 목록 필드 추가하거나, 파라미터 제거 후 bool만 사용.
-
-### P3-1. `ScissorRect.extent` 타입 수정
-
-- **파일**: `src/rhi/include/rhi/RHITypes.hpp`
-- `extent` 필드가 `Extent3D` → `Extent2D`로 교체 필요.
-
-### P3-2. `BuildingEntity.rotation` 타입 교체
-
-- **파일**: `src/game/entities/BuildingEntity.hpp`
-- `glm::vec4` → `glm::quat` (타입 안전성).
-- `getTransformMatrix()`에서 `glm::mat4_cast()` 사용.
-
-### P3-3. `initializeFromConfig` stub 처리
-
-- **파일**: `src/game/managers/WorldManager.cpp/.hpp`
-- 구현 전까지 `private` 이동 또는 선언 제거.
-
-### VIS-3. Bloom
-
-- **전제**: VIS-1 ✅
-- 밝기 임계 추출 → 다운샘플 가우시안 블러 → 업샘플 합산 (3–4 패스)
-- 파티클 이펙트 시각 피드백과 시너지
-
-### VIS-4. SSAO
-
-- **전제**: VIS-1 ✅
-- 반구 방향 깊이 샘플링으로 차폐값 계산 → blur → 조명 곱
-- G-Buffer 부분 도입 필요 (depth + normal)
-
-### VIS-5. Procedural Building Textures (Phase 1)
-
-- **전제**: 없음 (셰이더 수정만)
-- `roughAOPad.ba` 재활용 (`numFloors`, `priceRate`)
-- UV 기반 창문 격자 + 이미시브 (가격 연동)
-- 세부 계획: `VISUAL_UPGRADE.md` Phase 1 참조
 
 ### VIS-7. 텍스처 & 환경 고도화 전체
 

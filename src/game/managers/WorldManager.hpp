@@ -47,12 +47,6 @@ public:
      */
     void initialize();
 
-    /**
-     * @brief Initialize world from configuration file (future)
-     * @param configPath Path to world.json
-     */
-    void initializeFromConfig(const std::string& configPath);
-
     // ========== Sector Management ==========
 
     /**
