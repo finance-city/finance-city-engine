@@ -1,6 +1,6 @@
 # Finance City Engine — TODO
 
-최종 업데이트: 2026-03-30
+최종 업데이트: 2026-03-30 (VIS-7 진행 중)
 
 ---
 
@@ -25,8 +25,12 @@
 ✅ 완료   VIS-5  Procedural Building Textures (Phase 1) — 창문 격자 + 이미시브
 ✅ 완료   VIS-3  Bloom — 3-pass (prefilter → blur H → blur V), tonemap에 합산
 ✅ 완료   VIS-4  SSAO — height-based AO (building.wgsl; 화면공간 SSAO는 VIS-7 이후 고려)
-
-⏳ 대기   VIS-7  텍스처 & 환경 고도화 전체 (VISUAL_UPGRADE.md 참조)
+✅ 완료   VIS-7a ObjectData texParams 필드 추가 (128→144 bytes, Phase 2 인프라)
+✅ 완료   VIS-7b Stepped Tower — vertex shader 기반 setback 변형 (>22층 → 상부 18% inset)
+✅ 완료   VIS-7c 프로시저럴 도로 그리드 — 90m 블록, 12m 도로, 황색 점선 차선
+✅ 완료   VIS-7d LOD — 300m 이상 거리에서 창문/이미시브 비활성화
+✅ 완료   VIS-7e 프로시저럴 파사드 텍스처 (TextureManager — PNG 없이 CPU에서 생성, Texture2DArray 4레이어)
+✅ 완료   VIS-7f 버텍스 탄젠트 + TBN 노말맵 (Vertex.hpp, createDefaultMesh, building.wgsl)
 ```
 
 ---
@@ -104,17 +108,23 @@ LDR 중간 텍스처(RGBA8Unorm)에서 읽어 스왑체인에 씀.
 
 ## ⏳ 대기 항목
 
-### VIS-7. 텍스처 & 환경 고도화 전체
+### VIS-7. 텍스처 & 환경 고도화 (부분 완료)
 
 세부 계획: **`VISUAL_UPGRADE.md`** 참조
 
+**완료:**
+
+- ObjectData `texParams` 필드 추가 (Phase 2 인프라)
+- Stepped Tower vertex setback (Phase 6 간소화 — vertex shader 방식)
+- 프로시저럴 도로·차선 (Phase 4)
+- LOD 거리 기반 창문 비활성화 (Phase 7)
+
+**대기 (PNG 자산 필요):**
+
 ```text
-Phase 2: TextureManager + 버텍스 탄젠트 + ObjectData 확장 + 바인딩 확장
-Phase 3: 빌딩 파사드 텍스처 (albedo + normal, 4 타입)
-Phase 4: 지면 타일링 + 프로시저럴 도로·차선
-Phase 5: 노말맵 TBN 적용
-Phase 6: 빌딩 메시 다변화 (Box/SteppedTower/SlimTower/WideSlab)
-Phase 7: LOD (거리 기반 텍스처 품질 단계)
+Phase 3: 빌딩 파사드 텍스처 (albedo + normal, 4 타입 × 2 = PNG 8종)
+Phase 5: 노말맵 TBN (버텍스 탄젠트 속성 추가 + PNG 필요)
+Phase 6full: 실제 분리 메시 (Box/SteppedTower/SlimTower/WideSlab)
 ```
 
 ---

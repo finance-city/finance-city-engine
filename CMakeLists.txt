@@ -209,6 +209,9 @@ if(NOT EMSCRIPTEN)
         # Phase 1.2: IBL (Image Based Lighting)
         src/rendering/IBLManager.cpp
         src/rendering/IBLManager.hpp
+        # VIS-7: Procedural building textures
+        src/rendering/TextureManager.cpp
+        src/rendering/TextureManager.hpp
     )
 
     target_include_directories(FinanceCityEngine BEFORE PRIVATE
@@ -424,6 +427,9 @@ else()
         # Phase 1.2: IBL (Image Based Lighting)
         src/rendering/IBLManager.cpp
         src/rendering/IBLManager.hpp
+        # VIS-7: Procedural building textures
+        src/rendering/TextureManager.cpp
+        src/rendering/TextureManager.hpp
     )
 
     target_include_directories(FinanceCityEngine BEFORE PRIVATE

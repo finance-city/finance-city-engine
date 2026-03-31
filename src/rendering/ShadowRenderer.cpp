@@ -1,5 +1,7 @@
 #include "ShadowRenderer.hpp"
+#include "src/utils/Vertex.hpp"
 #include "src/utils/FileUtils.hpp"
+#include <algorithm>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstring>
 #include <iostream>
@@ -281,12 +283,12 @@ bool ShadowRenderer::createPipeline(void* nativeRenderPass, rhi::RHIBindGroupLay
     // Vertex input layout — per-vertex only (binding 0)
     // Instance data is now accessed via SSBO (set 1, binding 0)
     rhi::VertexBufferLayout vertexLayout;
-    vertexLayout.stride = sizeof(float) * 8;  // pos(3) + normal(3) + texCoord(2)
+    vertexLayout.stride = sizeof(Vertex);  // 48 bytes: pos(12) + normal(12) + texCoord(8) + tangent(16)
     vertexLayout.inputRate = rhi::VertexInputRate::Vertex;
     vertexLayout.attributes = {
-        rhi::VertexAttribute(0, 0, rhi::TextureFormat::RGB32Float, 0),                 // position
-        rhi::VertexAttribute(1, 0, rhi::TextureFormat::RGB32Float, sizeof(float) * 3), // normal
-        rhi::VertexAttribute(2, 0, rhi::TextureFormat::RG32Float, sizeof(float) * 6)   // texCoord
+        rhi::VertexAttribute(0, 0, rhi::TextureFormat::RGB32Float, offsetof(Vertex, pos)),      // position
+        rhi::VertexAttribute(1, 0, rhi::TextureFormat::RGB32Float, offsetof(Vertex, normal)),   // normal
+        rhi::VertexAttribute(2, 0, rhi::TextureFormat::RG32Float,  offsetof(Vertex, texCoord))  // texCoord
     };
     pipelineDesc.vertex.buffers.push_back(vertexLayout);
 
@@ -334,10 +336,13 @@ void ShadowRenderer::updateLightMatrix(const glm::vec3& lightDir,
     glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, glm::vec3(0.0f, 1.0f, 0.0f));
 
     // Orthographic projection sized to cover entire scene
-    // Use sceneRadius to ensure full coverage regardless of scene size
     float orthoSize = sceneRadius * 1.2f;  // 20% margin for safety
-    float nearPlane = 0.1f;
-    float farPlane = lightDistance * 2.0f;
+
+    // Tighten near/far to actual scene extents from the light's viewpoint.
+    // Buildings reach up to ~300m; scene extends sceneRadius in all directions.
+    // Tight planes dramatically improve depth precision and reduce required bias.
+    float nearPlane = std::max(1.0f, lightDistance - sceneRadius - 300.0f);
+    float farPlane  = lightDistance + sceneRadius + 300.0f;
 
     // Use Vulkan-compatible depth range [0, 1] instead of OpenGL's [-1, 1]
     // glm::ortho produces Z in [-1, 1], but Vulkan clips Z < 0, causing half the scene to be clipped

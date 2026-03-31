@@ -18,7 +18,8 @@ struct alignas(16) ObjectData {
     glm::vec4 boundingBoxMax;   // 16 bytes — AABB max (w unused)
     glm::vec4 colorAndMetallic; // 16 bytes — rgb=albedo, a=metallic
     glm::vec4 roughnessAOPad;   // 16 bytes — r=roughness, g=ao, b=numFloors, a=priceRate
-    // Total: 128 bytes
+    glm::vec4 texParams;        // 16 bytes — r=buildingType (0-3), g=uvScale, ba=reserved
+    // Total: 144 bytes
 };
 
 /**

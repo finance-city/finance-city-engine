@@ -287,42 +287,46 @@ void BuildingManager::createDefaultMesh() {
     }
 
     // Create a simple cube mesh (1x1x1 unit cube, centered at origin)
+    // Tangent vectors per face (xyz = tangent direction, w = bitangent sign)
+    //   Front/Back:  tangent = +X (UV.x goes right = +X in world)
+    //   Left/Right:  tangent = +Z (UV.x goes right = +Z in world for those faces)
+    //   Top/Bottom:  tangent = +X
     std::vector<Vertex> vertices = {
-        // Front face
-        {{-0.5f, 0.0f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f}},
-        {{ 0.5f, 0.0f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 0.0f}},
-        {{ 0.5f, 1.0f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 1.0f}},
-        {{-0.5f, 1.0f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f}},
+        // Front face (N = 0,0,-1), tangent = +X
+        {{-0.5f, 0.0f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f}, {1,0,0,1}},
+        {{ 0.5f, 0.0f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 0.0f}, {1,0,0,1}},
+        {{ 0.5f, 1.0f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 1.0f}, {1,0,0,1}},
+        {{-0.5f, 1.0f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f}, {1,0,0,1}},
 
-        // Back face
-        {{ 0.5f, 0.0f,  0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},
-        {{-0.5f, 0.0f,  0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
-        {{-0.5f, 1.0f,  0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-        {{ 0.5f, 1.0f,  0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+        // Back face (N = 0,0,+1), tangent = -X
+        {{ 0.5f, 0.0f,  0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}, {-1,0,0,1}},
+        {{-0.5f, 0.0f,  0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}, {-1,0,0,1}},
+        {{-0.5f, 1.0f,  0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}, {-1,0,0,1}},
+        {{ 0.5f, 1.0f,  0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}, {-1,0,0,1}},
 
-        // Left face
-        {{-0.5f, 0.0f,  0.5f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-        {{-0.5f, 0.0f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-        {{-0.5f, 1.0f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
-        {{-0.5f, 1.0f,  0.5f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
+        // Left face (N = -1,0,0), tangent = +Z
+        {{-0.5f, 0.0f,  0.5f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}, {0,0,1,1}},
+        {{-0.5f, 0.0f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}, {0,0,1,1}},
+        {{-0.5f, 1.0f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}, {0,0,1,1}},
+        {{-0.5f, 1.0f,  0.5f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}, {0,0,1,1}},
 
-        // Right face
-        {{ 0.5f, 0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-        {{ 0.5f, 0.0f,  0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-        {{ 0.5f, 1.0f,  0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
-        {{ 0.5f, 1.0f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
+        // Right face (N = +1,0,0), tangent = -Z
+        {{ 0.5f, 0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}, {0,0,-1,1}},
+        {{ 0.5f, 0.0f,  0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}, {0,0,-1,1}},
+        {{ 0.5f, 1.0f,  0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}, {0,0,-1,1}},
+        {{ 0.5f, 1.0f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}, {0,0,-1,1}},
 
-        // Top face
-        {{-0.5f, 1.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-        {{ 0.5f, 1.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-        {{ 0.5f, 1.0f,  0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
-        {{-0.5f, 1.0f,  0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+        // Top face (N = 0,+1,0), tangent = +X
+        {{-0.5f, 1.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}, {1,0,0,1}},
+        {{ 0.5f, 1.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}, {1,0,0,1}},
+        {{ 0.5f, 1.0f,  0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}, {1,0,0,1}},
+        {{-0.5f, 1.0f,  0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}, {1,0,0,1}},
 
-        // Bottom face
-        {{-0.5f, 0.0f,  0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 0.0f}},
-        {{ 0.5f, 0.0f,  0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f}},
-        {{ 0.5f, 0.0f, -0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 1.0f}},
-        {{-0.5f, 0.0f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 1.0f}},
+        // Bottom face (N = 0,-1,0), tangent = +X
+        {{-0.5f, 0.0f,  0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 0.0f}, {1,0,0,1}},
+        {{ 0.5f, 0.0f,  0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f}, {1,0,0,1}},
+        {{ 0.5f, 0.0f, -0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 1.0f}, {1,0,0,1}},
+        {{-0.5f, 0.0f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 1.0f}, {1,0,0,1}},
     };
 
     std::vector<uint32_t> indices = {
@@ -430,6 +434,7 @@ void BuildingManager::updateObjectBuffer() {
         // Material: medium asphalt
         ground.colorAndMetallic = glm::vec4(0.35f, 0.35f, 0.38f, 0.0f);
         ground.roughnessAOPad = glm::vec4(0.92f, 1.0f, 0.0f, 0.0f);
+        ground.texParams = glm::vec4(4.0f, 1.0f, 0.0f, 0.0f);  // type 4 = ground plane
         objectData.push_back(ground);
     }
 
@@ -453,6 +458,14 @@ void BuildingManager::updateObjectBuffer() {
         float numFloors = building.currentHeight / 3.5f;  // 3.5m per floor
         float priceRate = building.priceChangePercent * 0.01f;  // % → ratio
         obj.roughnessAOPad = glm::vec4(0.4f, 1.0f, numFloors, priceRate);
+
+        // Building type for material variation (Phase 3 texture index when available)
+        //   0 = standard box, 1 = glass tower, 2 = brick mid, 3 = modern office
+        float buildingType = 0.0f;
+        if (building.currentHeight > 80.0f)          buildingType = 1.0f;
+        else if (building.currentHeight > 40.0f)     buildingType = 3.0f;
+        else if ((entityId & 1u) == 0u)              buildingType = 2.0f;
+        obj.texParams = glm::vec4(buildingType, 1.0f, 0.0f, 0.0f);
 
         objectData.push_back(obj);
     }

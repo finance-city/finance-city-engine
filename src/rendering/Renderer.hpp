@@ -9,6 +9,7 @@
 #include "src/rendering/SkyboxRenderer.hpp"
 #include "src/rendering/ShadowRenderer.hpp"
 #include "src/rendering/IBLManager.hpp"
+#include "src/rendering/TextureManager.hpp"
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -243,7 +244,8 @@ private:
     std::unique_ptr<rendering::SkyboxRenderer> skyboxRenderer;
     std::unique_ptr<rendering::ShadowRenderer> shadowRenderer;
     std::unique_ptr<rendering::IBLManager> iblManager;
-    float shadowBias = 0.008f;
+    std::unique_ptr<rendering::TextureManager> textureManager;
+    float shadowBias = 0.0015f;
     float shadowStrength = 0.7f;
     float exposure = 1.0f;
 
@@ -307,6 +309,7 @@ private:
     void createSkyboxRenderer();
     void createShadowRenderer();
     void createIBL();
+    void createTextureManager();
     void createCullingPipeline();
 #ifdef __EMSCRIPTEN__
     void createHDRRenderTarget();

@@ -3,6 +3,7 @@
 #include "src/ui/ImGuiManager.hpp"
 #endif
 #include "InstancedRenderData.hpp"
+#include "TextureManager.hpp"
 #include "src/utils/Logger.hpp"
 #include "src/utils/FileUtils.hpp"
 
@@ -42,6 +43,9 @@ Renderer::Renderer(GLFWwindow* window, bool enableValidation)
 
     // Initialize IBL (must be before building pipeline for bind group layout)
     createIBL();
+
+    // Generate procedural building textures (before building pipeline — needed for layout)
+    createTextureManager();
 
 #ifdef __EMSCRIPTEN__
     // HDR render target must exist before building pipeline (color format differs)
@@ -385,6 +389,29 @@ void Renderer::createBuildingPipeline() {
     iblSamplerEntry.type = rhi::BindingType::Sampler;
     buildingLayoutDesc.entries.push_back(iblSamplerEntry);
 
+    // Binding 7: Building albedo Texture2DArray (fragment only)
+    rhi::BindGroupLayoutEntry albedoArrayEntry;
+    albedoArrayEntry.binding = 7;
+    albedoArrayEntry.visibility = rhi::ShaderStage::Fragment;
+    albedoArrayEntry.type = rhi::BindingType::SampledTexture;
+    albedoArrayEntry.textureViewDimension = rhi::TextureViewDimension::View2DArray;
+    buildingLayoutDesc.entries.push_back(albedoArrayEntry);
+
+    // Binding 8: Building normal Texture2DArray (fragment only)
+    rhi::BindGroupLayoutEntry normalArrayEntry;
+    normalArrayEntry.binding = 8;
+    normalArrayEntry.visibility = rhi::ShaderStage::Fragment;
+    normalArrayEntry.type = rhi::BindingType::SampledTexture;
+    normalArrayEntry.textureViewDimension = rhi::TextureViewDimension::View2DArray;
+    buildingLayoutDesc.entries.push_back(normalArrayEntry);
+
+    // Binding 11: Anisotropic sampler (fragment only)
+    rhi::BindGroupLayoutEntry anisoSamplerEntry;
+    anisoSamplerEntry.binding = 11;
+    anisoSamplerEntry.visibility = rhi::ShaderStage::Fragment;
+    anisoSamplerEntry.type = rhi::BindingType::Sampler;
+    buildingLayoutDesc.entries.push_back(anisoSamplerEntry);
+
     buildingLayoutDesc.label = "Building Bind Group Layout";
 
     buildingBindGroupLayout = rhiBridge->getDevice()->createBindGroupLayout(buildingLayoutDesc);
@@ -443,9 +470,10 @@ void Renderer::createBuildingPipeline() {
     vertexLayout.stride = sizeof(Vertex);
     vertexLayout.inputRate = rhi::VertexInputRate::Vertex;
     vertexLayout.attributes = {
-        rhi::VertexAttribute(0, 0, rhi::TextureFormat::RGB32Float, offsetof(Vertex, pos)),    // inPosition
-        rhi::VertexAttribute(1, 0, rhi::TextureFormat::RGB32Float, offsetof(Vertex, normal)),  // inNormal
-        rhi::VertexAttribute(2, 0, rhi::TextureFormat::RG32Float, offsetof(Vertex, texCoord)) // inTexCoord
+        rhi::VertexAttribute(0, 0, rhi::TextureFormat::RGB32Float,  offsetof(Vertex, pos)),      // position
+        rhi::VertexAttribute(1, 0, rhi::TextureFormat::RGB32Float,  offsetof(Vertex, normal)),   // normal
+        rhi::VertexAttribute(2, 0, rhi::TextureFormat::RG32Float,   offsetof(Vertex, texCoord)), // texCoord
+        rhi::VertexAttribute(3, 0, rhi::TextureFormat::RGBA32Float, offsetof(Vertex, tangent))   // tangent (xyz + sign)
     };
 
     // Create render pipeline descriptor
@@ -655,7 +683,19 @@ void Renderer::createShadowRenderer() {
                         rhi::BindGroupEntry::Sampler(6, iblManager->getSampler())
                     );
                 }
-                bindGroupDesc.label = "Building Bind Group with Shadow + IBL";
+                // Texture array bindings (7-8, 11) — procedural building textures
+                if (textureManager && textureManager->isReady()) {
+                    bindGroupDesc.entries.push_back(
+                        rhi::BindGroupEntry::TextureView(7, textureManager->getAlbedoArrayView())
+                    );
+                    bindGroupDesc.entries.push_back(
+                        rhi::BindGroupEntry::TextureView(8, textureManager->getNormalArrayView())
+                    );
+                    bindGroupDesc.entries.push_back(
+                        rhi::BindGroupEntry::Sampler(11, textureManager->getAnisoSampler())
+                    );
+                }
+                bindGroupDesc.label = "Building Bind Group with Shadow + IBL + Textures";
                 buildingBindGroups.push_back(rhiBridge->getDevice()->createBindGroup(bindGroupDesc));
             }
             LOG_INFO("Renderer") << "Building bind groups updated with shadow map";
@@ -686,6 +726,29 @@ void Renderer::createIBL() {
     } else {
         LOG_ERROR("Renderer") << "Failed to initialize IBL manager";
         iblManager.reset();
+    }
+}
+
+void Renderer::createTextureManager() {
+    if (!rhiBridge || !rhiBridge->isReady()) {
+        return;
+    }
+
+    auto* rhiDevice = rhiBridge->getDevice();
+    auto* rhiQueue  = rhiBridge->getGraphicsQueue();
+    if (!rhiDevice || !rhiQueue) {
+        return;
+    }
+
+    textureManager = std::make_unique<rendering::TextureManager>(rhiDevice, rhiQueue);
+    if (textureManager->generate()) {
+        LOG_INFO("Renderer") << "TextureManager: procedural textures ready";
+    } else {
+        LOG_WARN("Renderer") << "TextureManager: procedural generation failed, creating fallback textures";
+        if (!textureManager->generateFallback()) {
+            LOG_ERROR("Renderer") << "TextureManager: fallback also failed — texture bindings will be missing";
+            textureManager.reset();
+        }
     }
 }
 
@@ -1219,6 +1282,17 @@ bool Renderer::loadEnvironmentMap(const std::string& hdrPath) {
             bindGroupDesc.entries.push_back(
                 rhi::BindGroupEntry::Sampler(6, iblManager->getSampler())
             );
+            if (textureManager && textureManager->isReady()) {
+                bindGroupDesc.entries.push_back(
+                    rhi::BindGroupEntry::TextureView(7, textureManager->getAlbedoArrayView())
+                );
+                bindGroupDesc.entries.push_back(
+                    rhi::BindGroupEntry::TextureView(8, textureManager->getNormalArrayView())
+                );
+                bindGroupDesc.entries.push_back(
+                    rhi::BindGroupEntry::Sampler(11, textureManager->getAnisoSampler())
+                );
+            }
             bindGroupDesc.label = "Building Bind Group with IBL";
             buildingBindGroups.push_back(rhiBridge->getDevice()->createBindGroup(bindGroupDesc));
         }

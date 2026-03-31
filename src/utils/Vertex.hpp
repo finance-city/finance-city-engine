@@ -8,6 +8,7 @@ struct Vertex {
 	glm::vec3 pos;
 	glm::vec3 normal;
 	glm::vec2 texCoord;
+	glm::vec4 tangent;  // xyz = tangent direction, w = bitangent sign (+1 or -1)
 
 	bool operator==(const Vertex& other) const {
 		return pos == other.pos && normal == other.normal && texCoord == other.texCoord;
