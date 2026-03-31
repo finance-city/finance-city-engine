@@ -4,12 +4,12 @@
         {
             "name": "mac-default",
             "displayName": "Mac Default Config",
-            "description": "Default build using vcpkg",
+            "description": "Default build using vcpkg (requires VCPKG_ROOT env var)",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_TOOLCHAIN_FILE": "/Users/mindaewon/vcpkg/scripts/buildsystems/vcpkg.cmake",
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "TRUE",
                 "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
                 "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
@@ -20,50 +20,48 @@
                 "VCPKG_TARGET_TRIPLET": "arm64-osx"
             }
         },
-      {
-        "name": "windows-default",
-        "displayName": "Windows Default Config with Clang",
-        "description": "Default build for Windows using vcpkg with Clang compiler",
-        "generator": "Ninja",
-        "binaryDir": "${sourceDir}/build-windows",
-        "cacheVariables": {
-          "CMAKE_BUILD_TYPE": "Debug",
-          "CMAKE_TOOLCHAIN_FILE": "C:\\dev\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake",
-          "CMAKE_EXPORT_COMPILE_COMMANDS": "TRUE",
-          "CMAKE_C_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/bin/clang.exe",
-          "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/bin/clang++.exe"
+        {
+            "name": "windows-default",
+            "displayName": "Windows Default Config with Clang",
+            "description": "Default build for Windows using vcpkg with Clang compiler (requires VCPKG_ROOT env var)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-windows",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "TRUE",
+                "CMAKE_C_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/bin/clang.exe",
+                "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/bin/clang++.exe"
+            },
+            "environment": {
+                "VCPKG_TARGET_TRIPLET": "x64-windows"
+            }
         },
-        "environment": {
-          "VCPKG_TARGET_TRIPLET": "x64-windows"
+        {
+            "name": "linux-default",
+            "displayName": "Linux Default Config",
+            "description": "Default build for Linux using vcpkg with Clang 18 (requires VCPKG_ROOT and VULKAN_SDK env vars)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "TRUE",
+                "CMAKE_C_COMPILER": "/usr/bin/clang-18",
+                "CMAKE_CXX_COMPILER": "/usr/bin/clang++-18",
+                "CMAKE_CXX_FLAGS": "-pthread",
+                "CMAKE_EXE_LINKER_FLAGS": "-lpthread",
+                "CMAKE_THREAD_LIBS_INIT": "-lpthread",
+                "CMAKE_HAVE_THREADS_LIBRARY": "1",
+                "CMAKE_USE_PTHREADS_INIT": "1",
+                "THREADS_PREFER_PTHREAD_FLAG": "ON",
+                "VULKAN_SDK": "$env{VULKAN_SDK}"
+            },
+            "environment": {
+                "VCPKG_TARGET_TRIPLET": "x64-linux",
+                "LD_LIBRARY_PATH": "/usr/lib/x86_64-linux-gnu:$penv{LD_LIBRARY_PATH}"
+            }
         }
-      },
-      {
-        "name": "linux-default",
-        "displayName": "Linux Default Config",
-        "description": "Default build for Linux using vcpkg with Clang 18",
-        "generator": "Ninja",
-        "binaryDir": "${sourceDir}/build",
-        "cacheVariables": {
-          "CMAKE_BUILD_TYPE": "Debug",
-          "CMAKE_TOOLCHAIN_FILE": "$env{HOME}/vcpkg/scripts/buildsystems/vcpkg.cmake",
-          "CMAKE_EXPORT_COMPILE_COMMANDS": "TRUE",
-          "CMAKE_C_COMPILER": "/usr/bin/clang-18",
-          "CMAKE_CXX_COMPILER": "/usr/bin/clang++-18",
-          "CMAKE_CXX_FLAGS": "-pthread",
-          "CMAKE_EXE_LINKER_FLAGS": "-lpthread",
-          "CMAKE_THREAD_LIBS_INIT": "-lpthread",
-          "CMAKE_HAVE_THREADS_LIBRARY": "1",
-          "CMAKE_USE_PTHREADS_INIT": "1",
-          "THREADS_PREFER_PTHREAD_FLAG": "ON",
-          "VULKAN_SDK": "$env{HOME}/1.3.296.0/x86_64"
-        },
-        "environment": {
-          "VCPKG_TARGET_TRIPLET": "x64-linux",
-          "VULKAN_SDK": "$env{HOME}/1.3.296.0/x86_64",
-          "PATH": "/home/damin/vcpkg/downloads/tools/ninja/1.13.1-linux:$penv{PATH}",
-          "LD_LIBRARY_PATH": "/usr/lib/x86_64-linux-gnu:$penv{LD_LIBRARY_PATH}"
-        }
-      }
     ],
     "buildPresets": [
         {

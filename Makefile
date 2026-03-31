@@ -17,7 +17,10 @@ endif
 # Set platform-specific variables
 ifeq ($(DETECTED_OS),Linux)
     CMAKE_PRESET := linux-default
-    VULKAN_SDK := $(HOME)/1.3.296.0/x86_64
+    VULKAN_SDK ?= $(VULKAN_SDK)
+    ifeq ($(VULKAN_SDK),)
+        $(error VULKAN_SDK is not set. Run: export VULKAN_SDK=/path/to/vulkansdk/x86_64)
+    endif
     EXPORT_LIB_PATH := export LD_LIBRARY_PATH=$(VULKAN_SDK)/lib:$$LD_LIBRARY_PATH
     VULKAN_LAYER_PATH := $(VULKAN_SDK)/share/vulkan/explicit_layer.d
 else ifeq ($(DETECTED_OS),macOS)
@@ -60,7 +63,7 @@ COLOR_BLUE := \033[0;34m
 COLOR_YELLOW := \033[0;33m
 COLOR_RESET := \033[0m
 
-.PHONY: all build run run-only clean re help info demo-smoke release wasm configure-wasm build-wasm serve-wasm clean-wasm re-wasm setup-emscripten check-emscripten build-wasm-only
+.PHONY: all build run run-only clean re help info demo-smoke release wasm configure-wasm build-wasm serve-wasm clean-wasm re-wasm setup-emscripten check-emscripten build-wasm-only setup
 
 # Default target
 all: build
@@ -130,6 +133,9 @@ help:
 	@echo "$(COLOR_BLUE)  Finance City Engine Build System$(COLOR_RESET)"
 	@echo "$(COLOR_BLUE)========================================$(COLOR_RESET)"
 	@echo ""
+	@echo "$(COLOR_BLUE)First-time Setup:$(COLOR_RESET)"
+	@echo "  $(COLOR_GREEN)make setup$(COLOR_RESET)              - Install all dependencies (Vulkan SDK, vcpkg, Clang)"
+	@echo ""
 	@echo "$(COLOR_BLUE)Build & Run:$(COLOR_RESET)"
 	@echo "  $(COLOR_GREEN)make$(COLOR_RESET)                    - Build project"
 	@echo "  $(COLOR_GREEN)make run$(COLOR_RESET)                - Build and run"
@@ -167,6 +173,11 @@ EMSDK_PATH := $(HOME)/emsdk
 EMSCRIPTEN_ENV := $(EMSDK_PATH)/emsdk_env.sh
 
 # Install Emscripten SDK (one-time setup)
+setup:
+	@echo "$(COLOR_BLUE)Running development environment setup...$(COLOR_RESET)"
+	@chmod +x ./scripts/setup.sh
+	@./scripts/setup.sh
+
 setup-emscripten:
 	@echo "$(COLOR_BLUE)Running Emscripten setup script...$(COLOR_RESET)"
 	@./scripts/setup_emscripten.sh
